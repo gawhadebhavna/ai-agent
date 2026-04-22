@@ -1,0 +1,59 @@
+Metadata-Version: 2.4
+Name: fastapi-migration-automation
+Version: 0.1.0
+Summary: FastAPI + LangChain + LangGraph automation service for migration operations.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.32.0
+Requires-Dist: boto3>=1.35.0
+Requires-Dist: botocore>=1.35.0
+Requires-Dist: pydantic>=2.9.0
+Requires-Dist: pydantic-settings>=2.6.0
+Requires-Dist: langchain>=0.3.0
+Requires-Dist: langgraph>=0.2.0
+Requires-Dist: langchain-openai>=0.2.0
+Requires-Dist: langchain-ollama>=0.2.0
+Requires-Dist: ollama>=0.3.0
+Requires-Dist: langgraph-checkpoint-sqlite>=2.0.0
+Requires-Dist: httpx>=0.28.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
+
+# FastAPI Migration Automation
+
+Local-first backend for migration automation workflows built with:
+
+- `FastAPI` for HTTP APIs
+- `boto3` for AWS access
+- `LangChain` for model/tool integration
+- `LangGraph` for approval-gated agent orchestration
+- `Ollama` as the default local model provider
+- `OpenAI` as an optional hosted model provider
+
+## Features
+
+- Direct S3 APIs for listing buckets, listing objects, reading objects, and writing text or JSON objects
+- Agent endpoint that can interpret natural language requests and execute safe S3 actions
+- Human approval gate for write operations using LangGraph interrupts
+- SQLite-backed approval metadata and optional LangGraph checkpoint persistence
+
+## Quick Start
+
+1. Create a virtual environment and install dependencies.
+2. Set environment variables from `.env.example`.
+3. Run the API:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+## Key Endpoints
+
+- `GET /health`
+- `GET /v1/s3/buckets`
+- `GET /v1/s3/objects?bucket=...&prefix=...`
+- `GET /v1/s3/object?bucket=...&key=...`
+- `PUT /v1/s3/object`
+- `POST /v1/agent/s3`
