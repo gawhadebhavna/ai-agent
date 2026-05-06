@@ -1,0 +1,71 @@
+CUSTOMER QUERIES:
+    Show all customers
+    Get customers in Mumbai
+    List customers from Pune
+    Top 5 customers
+    Show top 3 customers in Bangalore
+    Find customer 100001
+    Search customer Reliance
+    Which customers are in India?
+    Give me customer details for 100005
+
+PRODUCT QUERIES
+    Show all products
+    List all materials
+    Get top 5 products
+    Show FERT products
+    Get products of type HALB
+    Find product MAT004
+    Search laptop
+    Show products related to electronics
+    Which products are raw materials?
+    List top 3 FERT products
+
+SALES ORDER QUERIES
+    Show all orders
+    Get sales orders
+    List top 5 orders
+    Find order 5000001
+    Show orders for customer 100001
+    Get sales orders for Mumbai customers
+    Which orders have highest quantity?
+    Show recent orders
+    List top 3 orders by quantity
+
+CROSS-ENTITY (ADVANCED BUSINESS QUERIES)
+    Show orders for customers in Mumbai
+    Which customer has highest orders?
+    Top customers by number of orders
+    Which products are most sold?
+    Show orders containing MAT001
+    Which customer bought laptop?
+    Give me product-wise sales
+
+NATURAL LANGUAGE / BUSINESS STYLE
+    What are my top selling products?
+    Which customers are most valuable?
+    Show me important customers
+    Give me high volume orders
+    Which products are moving fast?
+
+User: get products of type FERT
+Tool: get_products
+Arguments:
+{
+  "product_type": "FERT"
+}
+
+User: get products except HALB
+Tool: get_products
+Arguments:
+{
+  "exclude_type": "HALB"
+}
+
+User: show top 5 FERT products
+Tool: get_products
+Arguments:
+{
+  "product_type": "FERT",
+  "top": 5
+}

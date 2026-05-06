@@ -26,6 +26,30 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     approval_ttl_minutes: int = Field(default=30, ge=1)
 
+    # SAP API settings
+    sap_ngrok_base_url: str | None = None
+    sap_api_username: str | None = None
+    sap_api_password: str | None = None
+
+    # Azure OpenAI settings
+    azure_openai_endpoint: str | None = None
+    azure_openai_api_key: str | None = None
+    azure_openai_deployment: str = "gpt-4o"
+    azure_openai_api_version: str = "2024-02-15-preview"
+
+    # Azure Blob Storage settings
+    azure_storage_connection_string: str | None = None
+    azure_container_name: str = "sap-api"
+
+    # Databricks settings
+    databricks_url: str | None = None
+    databricks_token: str | None = None
+    databricks_job_id: int = 123
+
+    # TLS / SSL
+    # Set to false on networks with corporate SSL inspection certificates
+    ssl_verify: bool = True
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -54,6 +78,22 @@ class Settings(BaseSettings):
     @property
     def has_explicit_aws_credentials(self) -> bool:
         return bool(self.aws_access_key_id and self.aws_secret_access_key)
+
+    @property
+    def has_azure_openai_credentials(self) -> bool:
+        return bool(self.azure_openai_api_key and self.azure_openai_endpoint)
+
+    @property
+    def has_azure_blob_credentials(self) -> bool:
+        return bool(self.azure_storage_connection_string)
+
+    @property
+    def has_databricks_credentials(self) -> bool:
+        return bool(self.databricks_url and self.databricks_token)
+
+    @property
+    def has_sap_api_credentials(self) -> bool:
+        return bool(self.sap_ngrok_base_url and self.sap_api_username and self.sap_api_password)
 
 
 @lru_cache

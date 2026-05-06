@@ -7,6 +7,10 @@ from fastapi.responses import JSONResponse
 
 from app.agents.graph import AgentGraphBuilder
 from app.agents.providers import LLMRequestPlanner
+from app.agents.sap_graph import SAPGraphBuilder
+from app.agents.sap_service import SAPAgentService
+from app.agents.blob_tools import build_blob_tools
+from app.agents.sap_tools import build_sap_tools
 from app.agents.service import AgentService
 from app.agents.tools import build_s3_tools
 from app.api.router import api_router
@@ -14,6 +18,8 @@ from app.config import get_settings
 from app.core.exceptions import AppError
 from app.persistence.approval_repository import ApprovalRepository
 from app.services.aws import AWSClientFactory
+from app.services.azure import AzureBlobClientFactory
+from app.services.blob import AzureBlobService
 from app.services.s3 import S3Service
 
 
@@ -46,6 +52,25 @@ def create_app() -> FastAPI:
         app.state.approval_repository = approval_repository
         app.state.s3_service = s3_service
         app.state.agent_service = agent_service
+        app.state.blob_service = None
+        app.state.sap_agent_service = None
+
+        if settings.has_azure_blob_credentials:
+            azure_blob_factory = AzureBlobClientFactory(settings)
+            azure_blob_service = AzureBlobService(azure_blob_factory, settings)
+            app.state.blob_service = azure_blob_service
+
+            if settings.has_azure_openai_credentials:
+                sap_tools = {**build_sap_tools(settings), **build_blob_tools(azure_blob_service)}
+                sap_graph = SAPGraphBuilder(
+                    tools=sap_tools, settings=settings
+                ).compile()
+                app.state.sap_agent_service = SAPAgentService(
+                    graph=sap_graph,
+                    settings=settings,
+                    approval_repository=approval_repository,
+                )
+
         yield
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
