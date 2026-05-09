@@ -1,71 +1,72 @@
-CUSTOMER QUERIES:
-    Show all customers
-    Get customers in Mumbai
-    List customers from Pune
-    Top 5 customers
-    Show top 3 customers in Bangalore
-    Find customer 100001
-    Search customer Reliance
-    Which customers are in India?
-    Give me customer details for 100005
+TABLE DISCOVERY
+    What SAP tables are available?
+    List available tables
+    Show me the supported dummy SAP tables
 
-PRODUCT QUERIES
+CUSTOMER / KNA1 QUERIES
+    Show all customers
+    Get customers in DXB
+    List top 5 customers
+    Find customer 100001
+    Search customer ENOC
+    Which customers are in AE?
+    Give me KNA1 details for 100005
+
+PRODUCT / MARA QUERIES
     Show all products
     List all materials
     Get top 5 products
-    Show FERT products
-    Get products of type HALB
-    Find product MAT004
+    Find material MAT004
     Search laptop
-    Show products related to electronics
+    Show materials of type FERT
     Which products are raw materials?
-    List top 3 FERT products
 
-SALES ORDER QUERIES
-    Show all orders
-    Get sales orders
-    List top 5 orders
-    Find order 5000001
-    Show orders for customer 100001
-    Get sales orders for Mumbai customers
-    Which orders have highest quantity?
-    Show recent orders
-    List top 3 orders by quantity
+SALES DOCUMENT TABLE QUERIES
+    Show sales document flow
+    Get VBFA rows for document 5000001
+    Show sales document business data
+    Get VBKD payment terms for document 5000001
+    Show sales document partners
+    List VBPA partner rows for customer 100001
 
-CROSS-ENTITY (ADVANCED BUSINESS QUERIES)
-    Show orders for customers in Mumbai
-    Which customer has highest orders?
-    Top customers by number of orders
-    Which products are most sold?
-    Show orders containing MAT001
-    Which customer bought laptop?
-    Give me product-wise sales
+METADATA QUERIES
+    Show KNA1 metadata
+    What fields are in MARA?
+    Give me the schema for VBFA
+    Which columns exist in VBPA?
 
-NATURAL LANGUAGE / BUSINESS STYLE
-    What are my top selling products?
-    Which customers are most valuable?
-    Show me important customers
-    Give me high volume orders
-    Which products are moving fast?
+STORAGE QUERIES
+    Fetch KNA1 customers and write them to blob
+    Get top 5 MARA rows and store as parquet
+    Save VBFA document flow data
 
 User: get products of type FERT
-Tool: get_products
+Tool: get_sap_table_data
 Arguments:
 {
-  "product_type": "FERT"
+  "table_name": "MARA",
+  "filter_query": "MTART eq 'FERT'"
 }
 
-User: get products except HALB
-Tool: get_products
+User: show top 5 customers
+Tool: get_sap_table_data
 Arguments:
 {
-  "exclude_type": "HALB"
-}
-
-User: show top 5 FERT products
-Tool: get_products
-Arguments:
-{
-  "product_type": "FERT",
+  "table_name": "KNA1",
   "top": 5
+}
+
+User: show customers in DXB
+Tool: get_sap_table_data
+Arguments:
+{
+  "table_name": "KNA1",
+  "filter_query": "ORT01 eq 'DXB'"
+}
+
+User: what fields are available in VBPA?
+Tool: get_sap_table_metadata
+Arguments:
+{
+  "table_name": "VBPA"
 }

@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 from app.agents.sap_agent import SAPDataFetcher
+from app.agents.sap_tools import normalize_sap_table_name
 from app.schemas.sap_agent import SAPActionPlan, SAPToolName
 
 _WRITE_KEYWORDS = frozenset([
     "write", "store", "save", "persist", "upload",
     "load into delta", "write into delta", "push to blob",
 ])
-
-_TOOL_TABLE_MAPPING: dict[str, str] = {
-    "get_business_partners": "customers",
-    "get_products": "products",
-    "get_sales_orders": "sales_orders",
-}
 
 
 class SAPPlanner:
@@ -33,21 +28,23 @@ class SAPPlanner:
                 fetch_tool=SAPToolName.unsupported,
                 summary="Could not determine which SAP data to retrieve.",
                 rationale="The LLM did not select a tool for this message.",
-                final_response="Please clarify which SAP data you need (customers, products, or orders).",
+                final_response="Please clarify which SAP table you need (KNA1, MARA, VBFA, VBKD, or VBPA).",
             )
 
         write_intent = any(kw in message.lower() for kw in _WRITE_KEYWORDS)
-        table_name = _TOOL_TABLE_MAPPING.get(tool_name)
+        raw_table_name = arguments.get("table_name") if isinstance(arguments, dict) else None
+        table_name = normalize_sap_table_name(raw_table_name) if raw_table_name else None
+        write_after_fetch = write_intent and tool_name == SAPToolName.get_sap_table_data.value
 
         return SAPActionPlan(
             fetch_tool=SAPToolName(tool_name),
             fetch_args=arguments,
-            write_after_fetch=write_intent,
-            table_name=table_name if write_intent else None,
+            write_after_fetch=write_after_fetch,
+            table_name=table_name if write_after_fetch else None,
             summary=(
                 f"Fetch {table_name or tool_name} from SAP"
-                + (" and write to Azure Blob." if write_intent else ".")
+                + (" and write to Azure Blob." if write_after_fetch else ".")
             ),
             rationale=f"User requested '{tool_name}' with args {arguments}.",
-            requires_approval=write_intent,
+            requires_approval=write_after_fetch,
         )
