@@ -8,7 +8,7 @@ import httpx
 from openai import AzureOpenAI
 
 from app.agents.sap_tools import call_sap_api, trigger_databricks_ingestion
-from app.config import Settings
+from app.config import get_settings
 from app.core.exceptions import ProviderConfigurationError
 
 

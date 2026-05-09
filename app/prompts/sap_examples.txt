@@ -48,6 +48,14 @@ NATURAL LANGUAGE / BUSINESS STYLE
     Give me high volume orders
     Which products are moving fast?
 
+User:
+Fetch metadata for customer and create Delta tables
+
+Assistant:
+1. Use metadata fetch tool
+2. Use create_metadata_delta_tables tool
+3. Store metadata records
+
 User: get products of type FERT
 Tool: get_products
 Arguments:

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from app.config import Settings
+from app.config import get_settings
 from app.services.aws import AWSClientFactory
 
 

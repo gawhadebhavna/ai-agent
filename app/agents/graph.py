@@ -8,7 +8,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from app.config import Settings
+from app.config import get_settings
 from app.schemas.agent import ActionPlan, AgentS3Response, AgentStatus
 
 try:

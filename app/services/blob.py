@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from app.config import Settings
+from app.config import get_settings
 from app.services.azure import AzureBlobClientFactory
 
 

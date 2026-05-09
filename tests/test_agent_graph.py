@@ -7,7 +7,7 @@ from langgraph.types import Command
 
 from app.agents.graph import AgentGraphBuilder
 from app.agents import providers as provider_module
-from app.config import Settings
+from app.config import get_settings
 from app.schemas.agent import ActionPlan, RawActionPlan, ToolName
 from app.agents.providers import LLMRequestPlanner
 

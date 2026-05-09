@@ -5,7 +5,7 @@ from io import BytesIO
 
 import pytest
 
-from app.config import Settings
+from app.config import get_settings
 from app.core.exceptions import AccessDeniedError
 from app.schemas.s3 import S3ObjectWriteRequest
 from app.services.s3 import S3Service

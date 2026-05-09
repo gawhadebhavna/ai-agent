@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     databricks_url: str | None = None
     databricks_token: str | None = None
     databricks_job_id: int = 123
+    databricks_server_hostname: str | None = None
+    databricks_http_path: str | None = None
+    databricks_access_token: str | None = None
 
     # TLS / SSL
     # Set to false on networks with corporate SSL inspection certificates
@@ -89,7 +92,11 @@ class Settings(BaseSettings):
 
     @property
     def has_databricks_credentials(self) -> bool:
-        return bool(self.databricks_url and self.databricks_token)
+        return bool(
+            self.databricks_server_hostname
+            and self.databricks_http_path
+            and self.databricks_access_token
+        )
 
     @property
     def has_sap_api_credentials(self) -> bool:

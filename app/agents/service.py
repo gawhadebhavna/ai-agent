@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from langgraph.types import Command
 
-from app.config import Settings
+from app.config import get_settings
 from app.core.exceptions import ApprovalError
 from app.persistence.approval_repository import ApprovalRepository
 from app.schemas.agent import AgentS3Request, AgentS3Response, AgentStatus, ApprovalProposal

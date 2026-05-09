@@ -4,7 +4,7 @@ import re
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from app.config import Settings
+from app.config import get_settings
 from app.core.exceptions import ProviderConfigurationError
 from app.schemas.agent import ActionPlan, RawActionPlan, ToolName
 

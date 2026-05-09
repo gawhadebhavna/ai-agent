@@ -13,7 +13,7 @@ from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
 from typing_extensions import TypedDict
 
-from app.config import Settings
+from app.config import get_settings
 from app.schemas.sap_agent import SAPAgentStatus
 
 try:

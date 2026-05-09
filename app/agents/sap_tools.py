@@ -6,8 +6,16 @@ import requests
 from langchain_core.tools import StructuredTool
 from requests.auth import HTTPBasicAuth
 
-from app.config import Settings
+from app.config import get_settings
 from app.core.exceptions import ProviderConfigurationError
+
+from app.services.metadata_orchestrator import MetadataOrchestrator
+from app.services.data_orchestrator import DataOrchestrator
+from app.config import get_settings
+from app.services.delta_table_service import DeltaTableService
+
+
+
 
 _TOOL_TABLE_MAPPING: dict[str, str] = {
     "get_business_partners": "customers",
@@ -15,8 +23,25 @@ _TOOL_TABLE_MAPPING: dict[str, str] = {
     "get_sales_orders": "sales_orders",
 }
 
+def fetch_and_store_metadata(entity_name: str):
 
-def call_sap_api(endpoint: str, params: dict | None = None, *, settings: Settings) -> list[dict]:
+    settings = get_settings()
+
+    orchestrator = MetadataOrchestrator(
+        sap_base_url=settings.sap_ngrok_base_url,
+        sap_username=settings.sap_api_username,
+        sap_password=settings.sap_api_password
+    )
+
+    return orchestrator.process_prompt(entity_name)
+
+def create_metadata_delta_tables() -> dict:
+
+    service = DeltaTableService()
+
+    return service.create_metadata_tables()
+
+def call_sap_api(endpoint: str, params: dict | None = None, *, settings) -> list[dict]:
     """Make an authenticated GET request to the mock SAP endpoint."""
     if not settings.has_sap_api_credentials:
         raise ProviderConfigurationError(
@@ -117,6 +142,41 @@ def build_sap_tools(settings: Settings) -> dict[str, StructuredTool]:
                 params, settings=settings,
             )
         }
+    
+    def get_business_partner_metadata() -> dict:
+
+        response = requests.get(
+            f"{settings.sap_ngrok_base_url}/sap/opu/odata/sap/API_BUSINESS_PARTNER/$metadata",
+            auth=HTTPBasicAuth(
+                settings.sap_api_username,
+                settings.sap_api_password
+            ),
+            headers={"ngrok-skip-browser-warning": "true"},
+            timeout=30,
+            verify=settings.ssl_verify,
+        )
+
+        response.raise_for_status()
+
+        return response.json()
+    
+    def get_product_metadata() -> dict:
+
+        response = requests.get(
+            f"{settings.sap_ngrok_base_url}/sap/opu/odata/sap/API_PRODUCT_SRV/$metadata",
+            auth=HTTPBasicAuth(
+                settings.sap_api_username,
+                settings.sap_api_password
+            ),
+            headers={"ngrok-skip-browser-warning": "true"},
+            timeout=30,
+            verify=settings.ssl_verify,
+        )
+
+        response.raise_for_status()
+
+        return response.json()
+
 
     return {
         "get_business_partners": StructuredTool.from_function(
@@ -134,4 +194,22 @@ def build_sap_tools(settings: Settings) -> dict[str, StructuredTool]:
             name="get_sales_orders",
             description="Fetch SAP sales orders. Supports customer filter, search and top-N.",
         ),
+        "get_business_partner_metadata": StructuredTool.from_function(
+            func=get_business_partner_metadata,
+            name="get_business_partner_metadata",
+            description="Fetch SAP Business Partner metadata schema."
+        ),
+
+        "get_product_metadata": StructuredTool.from_function(
+            func=get_product_metadata,
+            name="get_product_metadata",
+            description="Fetch SAP Product metadata schema."
+        ),
+        "create_metadata_delta_tables": StructuredTool.from_function(
+            func=create_metadata_delta_tables,
+            name="create_metadata_delta_tables",
+            description="Create metadata Delta tables in Databricks."
+        ),
     }
+
+    

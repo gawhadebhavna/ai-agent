@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from botocore.exceptions import ClientError
 
-from app.config import Settings
+from app.config import get_settings
 from app.core.exceptions import AccessDeniedError, NotFoundError
 from app.schemas.s3 import (
     ObjectListResponse,

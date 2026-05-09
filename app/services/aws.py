@@ -3,7 +3,7 @@ from __future__ import annotations
 import boto3
 from botocore.client import BaseClient
 
-from app.config import Settings
+from app.config import get_settings
 
 
 class AWSClientFactory:

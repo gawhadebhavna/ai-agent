@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from azure.storage.blob import BlobServiceClient
 
-from app.config import Settings
+from app.config import get_settings
 from app.core.exceptions import ProviderConfigurationError
 
 
