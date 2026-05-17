@@ -80,7 +80,7 @@ def _sap_get(endpoint: str, params: dict | None = None, *, settings: Settings) -
         auth=HTTPBasicAuth(settings.sap_api_username, settings.sap_api_password),
         headers={"ngrok-skip-browser-warning": "true"},
         timeout=30,
-        verify=settings.ssl_verify,
+        verify=settings.ssl_verify_option,
     )
     response.raise_for_status()
     return response.json()
@@ -177,7 +177,7 @@ def trigger_databricks_ingestion(api_url: str, *, settings: Settings) -> dict[st
         "job_id": settings.databricks_job_id,
         "notebook_params": {"api_url": api_url},
     }
-    response = requests.post(url, headers=headers, json=payload, timeout=30, verify=settings.ssl_verify)
+    response = requests.post(url, headers=headers, json=payload, timeout=30, verify=settings.ssl_verify_option)
     return response.json()
 
 

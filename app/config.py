@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     # TLS / SSL
     # Set to false on networks with corporate SSL inspection certificates
     ssl_verify: bool = True
+    # Optional custom CA bundle path for TLS verification (recommended on corporate proxies).
+    ssl_ca_bundle: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -94,6 +96,12 @@ class Settings(BaseSettings):
     @property
     def has_sap_api_credentials(self) -> bool:
         return bool(self.sap_ngrok_base_url and self.sap_api_username and self.sap_api_password)
+
+    @property
+    def ssl_verify_option(self) -> bool | str:
+        if self.ssl_ca_bundle:
+            return str(Path(self.ssl_ca_bundle).expanduser())
+        return self.ssl_verify
 
 
 @lru_cache

@@ -18,7 +18,7 @@ class AzureBlobClientFactory:
                 "AZURE_STORAGE_CONNECTION_STRING is required for Azure Blob Storage."
             )
         self._connection_string = settings.azure_storage_connection_string
-        self._ssl_verify = settings.ssl_verify
+        self._ssl_verify = settings.ssl_verify_option
 
     def blob_service(self) -> BlobServiceClient:
         return BlobServiceClient.from_connection_string(

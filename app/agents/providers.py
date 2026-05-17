@@ -4,8 +4,8 @@ import re
 
 from langchain_core.prompts import ChatPromptTemplate
 
+from app.agents.model_factory import build_runtime_chat_model
 from app.config import Settings
-from app.core.exceptions import ProviderConfigurationError
 from app.schemas.agent import ActionPlan, RawActionPlan, ToolName
 
 PLANNER_PROMPT = """You are an AWS S3 planning assistant.
@@ -294,35 +294,4 @@ class LLMRequestPlanner:
         )
 
     def _build_model(self):
-        provider = self._settings.llm_provider.lower().strip()
-        if provider == "ollama":
-            try:
-                from langchain_ollama import ChatOllama
-            except ImportError as exc:
-                raise ProviderConfigurationError(
-                    "langchain-ollama is not installed. Install project dependencies first."
-                ) from exc
-            return ChatOllama(
-                model=self._settings.ollama_model,
-                base_url=self._settings.ollama_base_url,
-                temperature=0,
-            )
-        if provider == "openai":
-            try:
-                from langchain_openai import ChatOpenAI
-            except ImportError as exc:
-                raise ProviderConfigurationError(
-                    "langchain-openai is not installed. Install project dependencies first."
-                ) from exc
-            if not self._settings.openai_api_key:
-                raise ProviderConfigurationError(
-                    "OPENAI_API_KEY is required when LLM_PROVIDER=openai."
-                )
-            return ChatOpenAI(
-                model=self._settings.openai_model,
-                api_key=self._settings.openai_api_key,
-                temperature=0,
-            )
-        raise ProviderConfigurationError(
-            f"Unsupported LLM provider '{self._settings.llm_provider}'. Use 'ollama' or 'openai'."
-        )
+        return build_runtime_chat_model(self._settings)
