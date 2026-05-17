@@ -16,9 +16,9 @@ class SAPAgentStatus(str, Enum):
 
 
 class SAPToolName(str, Enum):
-    get_business_partners = "get_business_partners"
-    get_products = "get_products"
-    get_sales_orders = "get_sales_orders"
+    list_sap_tables = "list_sap_tables"
+    get_sap_table_data = "get_sap_table_data"
+    get_sap_table_metadata = "get_sap_table_metadata"
     trigger_ingestion = "trigger_ingestion"
     unsupported = "unsupported"
 
