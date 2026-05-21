@@ -1,0 +1,72 @@
+TABLE DISCOVERY
+    What SAP tables are available?
+    List available tables
+    Show me the supported dummy SAP tables
+
+CUSTOMER / KNA1 QUERIES
+    Show all customers
+    Get customers in DXB
+    List top 5 customers
+    Find customer 100001
+    Search customer ENOC
+    Which customers are in AE?
+    Give me KNA1 details for 100005
+
+PRODUCT / MARA QUERIES
+    Show all products
+    List all materials
+    Get top 5 products
+    Find material MAT004
+    Search laptop
+    Show materials of type FERT
+    Which products are raw materials?
+
+SALES DOCUMENT TABLE QUERIES
+    Show sales document flow
+    Get VBFA rows for document 5000001
+    Show sales document business data
+    Get VBKD payment terms for document 5000001
+    Show sales document partners
+    List VBPA partner rows for customer 100001
+
+METADATA QUERIES
+    Show KNA1 metadata
+    What fields are in MARA?
+    Give me the schema for VBFA
+    Which columns exist in VBPA?
+
+STORAGE QUERIES
+    Fetch KNA1 customers and write them to blob
+    Get top 5 MARA rows and store as parquet
+    Save VBFA document flow data
+
+User: get products of type FERT
+Tool: get_sap_table_data
+Arguments:
+{
+  "table_name": "MARA",
+  "filter_query": "MTART eq 'FERT'"
+}
+
+User: show top 5 customers
+Tool: get_sap_table_data
+Arguments:
+{
+  "table_name": "KNA1",
+  "top": 5
+}
+
+User: show customers in DXB
+Tool: get_sap_table_data
+Arguments:
+{
+  "table_name": "KNA1",
+  "filter_query": "ORT01 eq 'DXB'"
+}
+
+User: what fields are available in VBPA?
+Tool: get_sap_table_metadata
+Arguments:
+{
+  "table_name": "VBPA"
+}
