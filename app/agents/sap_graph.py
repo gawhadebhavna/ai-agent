@@ -4,15 +4,14 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-import httpx
 from langchain_core.messages import SystemMessage, ToolMessage
-from langchain_openai import AzureChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
 from typing_extensions import TypedDict
 
+from app.agents.model_factory import build_runtime_chat_model
 from app.config import Settings
 from app.schemas.sap_agent import SAPAgentStatus
 
@@ -159,15 +158,8 @@ class SAPGraphBuilder:
 
         return graph.compile(checkpointer=self._build_checkpointer())
 
-    def _build_llm(self) -> AzureChatOpenAI:
-        return AzureChatOpenAI(
-            azure_deployment=self._settings.azure_openai_deployment,
-            azure_endpoint=self._settings.azure_openai_endpoint,
-            api_key=self._settings.azure_openai_api_key,
-            api_version=self._settings.azure_openai_api_version,
-            http_client=httpx.Client(verify=self._settings.ssl_verify),
-            temperature=0,
-        )
+    def _build_llm(self):
+        return build_runtime_chat_model(self._settings)
 
     def _build_checkpointer(self):
         if SqliteSaver is None:

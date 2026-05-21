@@ -14,9 +14,9 @@ Build a local-first FastAPI backend for S3 list/read/write operations, with an a
   - `GET /v1/s3/objects?bucket=...&prefix=...`
   - `GET /v1/s3/object?bucket=...&key=...`
   - `PUT /v1/s3/object`
-- Implement one agent API:
-  - `POST /v1/agent/s3`
-  - read requests can execute immediately
+- Implement one unified LLM API:
+  - `POST /v1/llm/run`
+  - domain routing supports `aws`, `azure`, and `sap` (or `auto`)
   - write requests create an approval proposal
   - follow-up request with `approval_id` + `approve=true` executes the stored approved action
 - Build the agent flow in `LangGraph`:

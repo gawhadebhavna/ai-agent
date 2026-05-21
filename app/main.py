@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.agents.azure_blob_agent_service import AzureBlobAgentService
+from app.agents.blob_providers import AzureBlobRequestPlanner
 from app.agents.graph import AgentGraphBuilder
 from app.agents.providers import LLMRequestPlanner
 from app.agents.sap_graph import SAPGraphBuilder
@@ -13,6 +15,7 @@ from app.agents.blob_tools import build_blob_tools
 from app.agents.sap_tools import build_sap_tools
 from app.agents.service import AgentService
 from app.agents.tools import build_s3_tools
+from app.agents.unified_service import UnifiedLLMService
 from app.api.router import api_router
 from app.config import get_settings
 from app.core.exceptions import AppError
@@ -45,7 +48,7 @@ def create_app() -> FastAPI:
             graph=graph,
             settings=settings,
             approval_repository=approval_repository,
-            provider_name=planner.provider_name,
+            provider_name=f"aws_agent:{planner.provider_name}",
         )
 
         app.state.settings = settings
@@ -53,14 +56,23 @@ def create_app() -> FastAPI:
         app.state.s3_service = s3_service
         app.state.agent_service = agent_service
         app.state.blob_service = None
+        app.state.azure_blob_agent_service = None
         app.state.sap_agent_service = None
 
         if settings.has_azure_blob_credentials:
             azure_blob_factory = AzureBlobClientFactory(settings)
             azure_blob_service = AzureBlobService(azure_blob_factory, settings)
             app.state.blob_service = azure_blob_service
+            blob_planner = AzureBlobRequestPlanner(settings)
+            app.state.azure_blob_agent_service = AzureBlobAgentService(
+                planner=blob_planner,
+                blob_service=azure_blob_service,
+                settings=settings,
+                approval_repository=approval_repository,
+                provider_name=f"azure_blob_agent:{settings.llm_provider.lower().strip()}",
+            )
 
-            if settings.has_azure_openai_credentials:
+            if settings.has_sap_api_credentials:
                 sap_tools = {**build_sap_tools(settings), **build_blob_tools(azure_blob_service)}
                 sap_graph = SAPGraphBuilder(
                     tools=sap_tools, settings=settings
@@ -70,6 +82,13 @@ def create_app() -> FastAPI:
                     settings=settings,
                     approval_repository=approval_repository,
                 )
+
+        app.state.unified_llm_service = UnifiedLLMService(
+            aws_agent_service=agent_service,
+            approval_repository=approval_repository,
+            azure_blob_agent_service=app.state.azure_blob_agent_service,
+            sap_agent_service=app.state.sap_agent_service,
+        )
 
         yield
 

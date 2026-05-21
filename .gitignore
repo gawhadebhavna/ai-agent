@@ -6,4 +6,3 @@ var/
 *.pyc
 venv/
 .env
-.env.example
