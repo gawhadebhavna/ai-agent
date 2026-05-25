@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 from typing import Any
 
@@ -21,6 +22,7 @@ class AzureMCPClient:
         self._process: subprocess.Popen | None = None
         self._tools_cache: dict[str, Any] = {}
         self._initialized = False
+        self._subscription_id = settings.azure_subscription_id
 
     async def initialize(self) -> None:
         """Initialize connection to Azure MCP Server."""
@@ -28,14 +30,29 @@ class AzureMCPClient:
             return
 
         try:
-            # Start MCP server process
+            # Pass Azure credentials from settings to MCP server environment
+            env = os.environ.copy()
+            
+            if self._settings.azure_token_credentials:
+                env["AZURE_TOKEN_CREDENTIALS"] = self._settings.azure_token_credentials
+            if self._settings.azure_tenant_id:
+                env["AZURE_TENANT_ID"] = self._settings.azure_tenant_id
+            if self._settings.azure_client_id:
+                env["AZURE_CLIENT_ID"] = self._settings.azure_client_id
+            if self._settings.azure_client_secret:
+                env["AZURE_CLIENT_SECRET"] = self._settings.azure_client_secret
+            if self._settings.azure_subscription_id:
+                env["AZURE_SUBSCRIPTION_ID"] = self._settings.azure_subscription_id
+
+            # Start MCP server process with configured authentication
             self._process = subprocess.Popen(
-                ["npx", "-y", "@azure/mcp@latest", "server", "start"],
+                ["npx.cmd", "-y", "@azure/mcp@latest", "server", "start"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                env=env,
             )
 
             # Send initialization request
@@ -62,7 +79,7 @@ class AzureMCPClient:
 
         except FileNotFoundError:
             raise RuntimeError(
-                "npx not found. Please install Node.js (https://nodejs.org/)"
+                "npx.cmd not found. Please install Node.js (https://nodejs.org/)"
             )
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Azure MCP Server: {e}")

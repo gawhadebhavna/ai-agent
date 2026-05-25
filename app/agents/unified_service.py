@@ -106,11 +106,26 @@ class UnifiedLLMService:
         message = request.message.lower()
         if any(token in message for token in ["sap", "kna1", "mara", "vbfa", "vbkd", "vbpa"]):
             return LLMToolDomain.sap
-        # Azure MCP keywords (Key Vault, SQL, Cosmos, AKS, etc.)
-        if any(token in message for token in ["key vault", "keyvault", "cosmos", "sql database", "aks", "kubernetes", "resource group"]):
+        
+        # Azure MCP keywords (Key Vault, Storage, Databricks, SQL, Cosmos, AKS, etc.)
+        azure_mcp_keywords = [
+            # Key Vault
+            "key vault", "keyvault", "secret",
+            # Storage (when using MCP operations)
+            "blob container", "blob storage", "upload blob", "download blob",
+            # Databricks
+            "databricks", "dbx", "cluster", "notebook", "spark",
+            # Other Azure Services
+            "cosmos", "sql database", "aks", "kubernetes", "resource group",
+            "subscription"
+        ]
+        if any(token in message for token in azure_mcp_keywords):
             return LLMToolDomain.azure_mcp
+        
+        # Azure Blob (legacy direct blob service)
         if any(token in message for token in ["azure", "blob", "container", "parquet"]):
             return LLMToolDomain.azure
+        
         return LLMToolDomain.aws
 
     @staticmethod

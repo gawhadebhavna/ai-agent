@@ -61,20 +61,19 @@ def create_app() -> FastAPI:
         app.state.azure_mcp_agent_service = None
         app.state.sap_agent_service = None
 
-        # Initialize Azure MCP Agent (if Node.js and Azure CLI are available)
+        # Initialize Azure MCP Agent (if Node.js and credentials are available)
         try:
             azure_mcp_agent_service = AzureMCPAgentService(
                 settings=settings,
                 approval_repository=approval_repository,
             )
-            # Attempt async initialization
-            import asyncio
-            asyncio.create_task(azure_mcp_agent_service.initialize())
             app.state.azure_mcp_agent_service = azure_mcp_agent_service
+            print("✅ Azure MCP Agent initialized successfully")
         except Exception as e:
-            # MCP not available (Node.js not installed, Azure CLI not authenticated, etc.)
-            print(f"Azure MCP Server not available: {e}")
-            print("To enable Azure MCP, ensure Node.js is installed and run 'az login'")
+            # MCP not available (Node.js not installed, credentials not set, etc.)
+            print(f"⚠️ Azure MCP Server not available: {e}")
+            print("To enable Azure MCP, ensure Node.js is installed and Azure credentials are configured in .env")
+            app.state.azure_mcp_agent_service = None
 
         if settings.has_azure_blob_credentials:
             azure_blob_factory = AzureBlobClientFactory(settings)

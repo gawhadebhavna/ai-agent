@@ -1,62 +1,18 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 from typing import Any
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
 from app.agents.mcp_client import AzureMCPClient
-
-
-class KeyVaultSecretsArgs(BaseModel):
-    """Arguments for listing Key Vault secrets."""
-
-    vault_name: str = Field(description="Name of the Azure Key Vault")
-
-
-class KeyVaultSecretArgs(BaseModel):
-    """Arguments for getting a Key Vault secret."""
-
-    vault_name: str = Field(description="Name of the Azure Key Vault")
-    secret_name: str = Field(description="Name of the secret to retrieve")
-
-
-class StorageContainersArgs(BaseModel):
-    """Arguments for listing storage containers."""
-
-    storage_account: str = Field(description="Name of the Azure Storage account")
-
-
-class ResourceGroupsArgs(BaseModel):
-    """Arguments for listing resource groups."""
-
-    subscription_id: str | None = Field(
-        default=None, description="Optional subscription ID"
-    )
-
-
-class CosmosQueryArgs(BaseModel):
-    """Arguments for querying Cosmos DB."""
-
-    database_name: str = Field(description="Name of the Cosmos DB database")
-    container_name: str = Field(description="Name of the container")
-    query: str = Field(description="SQL query to execute")
-
-
-class SQLDatabasesArgs(BaseModel):
-    """Arguments for listing Azure SQL databases."""
-
-    server_name: str = Field(description="Name of the Azure SQL server")
-    resource_group: str = Field(description="Name of the resource group")
 
 
 def build_mcp_tools(mcp_client: AzureMCPClient) -> dict[str, StructuredTool]:
     """
     Build LangChain StructuredTools from Azure MCP Server.
 
-    Creates high-level tools for common Azure operations that internally
-    use the MCP client to interact with Azure services.
+    Creates wrapper tools that invoke the actual MCP server tools directly.
 
     Args:
         mcp_client: Initialized Azure MCP client instance
@@ -74,143 +30,393 @@ def build_mcp_tools(mcp_client: AzureMCPClient) -> dict[str, StructuredTool]:
         finally:
             loop.close()
 
-    # Azure Key Vault tools
-    def list_key_vault_secrets(vault_name: str) -> dict[str, Any]:
-        """List all secrets in an Azure Key Vault."""
-        return _run_async(
-            mcp_client.call_tool(
-                "azure_keyvault_list_secrets", {"vaultName": vault_name}
-            )
-        )
+    def _add_subscription(kwargs: dict) -> dict:
+        """Add subscription ID to kwargs if available and not already present."""
+        if mcp_client._subscription_id and "subscription" not in kwargs:
+            kwargs = {**kwargs, "subscription": mcp_client._subscription_id}
+        return kwargs
 
-    def get_key_vault_secret(vault_name: str, secret_name: str) -> dict[str, Any]:
-        """Get a specific secret from Azure Key Vault."""
-        return _run_async(
-            mcp_client.call_tool(
-                "azure_keyvault_get_secret",
-                {"vaultName": vault_name, "secretName": secret_name},
-            )
-        )
-
-    # Azure Storage tools
-    def list_storage_containers(storage_account: str) -> dict[str, Any]:
-        """List all containers in an Azure Storage account."""
-        return _run_async(
-            mcp_client.call_tool(
-                "azure_storage_list_containers", {"storageAccount": storage_account}
-            )
-        )
-
-    def list_storage_accounts(subscription_id: str | None = None) -> dict[str, Any]:
-        """List all Azure Storage accounts in the subscription."""
-        params = {}
-        if subscription_id:
-            params["subscriptionId"] = subscription_id
-        return _run_async(mcp_client.call_tool("azure_storage_list_accounts", params))
-
-    # Azure Resource Management tools
-    def list_resource_groups(subscription_id: str | None = None) -> dict[str, Any]:
+    # Azure Resource Groups
+    def list_resource_groups(**kwargs) -> dict[str, Any]:
         """List all resource groups in the Azure subscription."""
-        params = {}
-        if subscription_id:
-            params["subscriptionId"] = subscription_id
-        return _run_async(mcp_client.call_tool("azure_resources_list_groups", params))
+        kwargs = _add_subscription(kwargs)
+        return _run_async(mcp_client.call_tool("group_list", kwargs))
 
-    # Azure Cosmos DB tools
-    def query_cosmos_db(
-        database_name: str, container_name: str, query: str
+    def list_resources_in_group(**kwargs) -> dict[str, Any]:
+        """List all resources in a resource group."""
+        kwargs = _add_subscription(kwargs)
+        return _run_async(mcp_client.call_tool("group_resource_list", kwargs))
+
+    # Azure Subscriptions
+    def list_subscriptions(**kwargs) -> dict[str, Any]:
+        """List all Azure subscriptions."""
+        return _run_async(mcp_client.call_tool("subscription_list", kwargs))
+
+    # Azure Key Vault
+    def keyvault_operation(**kwargs) -> dict[str, Any]:
+        """Perform Azure Key Vault operations."""
+        kwargs = _add_subscription(kwargs)
+        return _run_async(mcp_client.call_tool("keyvault", kwargs))
+
+    # Azure Storage
+    def storage_operation(**kwargs) -> dict[str, Any]:
+        """Perform Azure Storage operations."""
+        kwargs = _add_subscription(kwargs)
+        return _run_async(mcp_client.call_tool("storage", kwargs))
+
+    # Azure SQL
+    def sql_operation(**kwargs) -> dict[str, Any]:
+        """Perform Azure SQL operations."""
+        kwargs = _add_subscription(kwargs)
+        return _run_async(mcp_client.call_tool("sql", kwargs))
+
+    # Azure Cosmos DB
+    def cosmos_operation(**kwargs) -> dict[str, Any]:
+        """Perform Azure Cosmos DB operations."""
+        kwargs = _add_subscription(kwargs)
+        return _run_async(mcp_client.call_tool("cosmos", kwargs))
+
+    # Azure Compute
+    def compute_operation(**kwargs) -> dict[str, Any]:
+        """Perform Azure Compute operations (VMs, etc.)."""
+        kwargs = _add_subscription(kwargs)
+        return _run_async(mcp_client.call_tool("compute", kwargs))
+
+    # Azure Container Registry
+    def acr_operation(**kwargs) -> dict[str, Any]:
+        """Perform Azure Container Registry operations."""
+        kwargs = _add_subscription(kwargs)
+        return _run_async(mcp_client.call_tool("acr", kwargs))
+
+    # Azure AKS
+    def aks_operation(**kwargs) -> dict[str, Any]:
+        """Perform Azure Kubernetes Service (AKS) operations."""
+        kwargs = _add_subscription(kwargs)
+        return _run_async(mcp_client.call_tool("aks", kwargs))
+
+    # Specific Key Vault Operations
+    def create_keyvault(
+        vault_name: str,
+        resource_group: str,
+        location: str = "eastus",
+        **kwargs,
     ) -> dict[str, Any]:
-        """Execute a SQL query against Azure Cosmos DB."""
-        return _run_async(
-            mcp_client.call_tool(
-                "azure_cosmos_query",
-                {
-                    "databaseName": database_name,
-                    "containerName": container_name,
-                    "query": query,
-                },
-            )
-        )
+        """
+        Create a new Azure Key Vault.
 
-    def list_cosmos_databases(account_name: str) -> dict[str, Any]:
-        """List all databases in a Cosmos DB account."""
-        return _run_async(
-            mcp_client.call_tool("azure_cosmos_list_databases", {"accountName": account_name})
-        )
+        Args:
+            vault_name: Name for the new Key Vault
+            resource_group: Resource group name
+            location: Azure region
 
-    # Azure SQL tools
-    def list_sql_databases(server_name: str, resource_group: str) -> dict[str, Any]:
-        """List all databases in an Azure SQL server."""
-        return _run_async(
-            mcp_client.call_tool(
-                "azure_sql_list_databases",
-                {"serverName": server_name, "resourceGroup": resource_group},
-            )
-        )
+        Returns:
+            Result of vault creation
+        """
+        params = {
+            "operation": "create",
+            "vault_name": vault_name,
+            "resource_group": resource_group,
+            "location": location,
+            **kwargs,
+        }
+        params = _add_subscription(params)
+        return _run_async(mcp_client.call_tool("keyvault", params))
 
-    def list_sql_servers(resource_group: str | None = None) -> dict[str, Any]:
-        """List all Azure SQL servers."""
-        params = {}
+    def list_keyvaults(resource_group: str | None = None, **kwargs) -> dict[str, Any]:
+        """List Key Vaults in a resource group or subscription."""
+        params = {"operation": "list", **kwargs}
         if resource_group:
-            params["resourceGroup"] = resource_group
-        return _run_async(mcp_client.call_tool("azure_sql_list_servers", params))
+            params["resource_group"] = resource_group
+        params = _add_subscription(params)
+        return _run_async(mcp_client.call_tool("keyvault", params))
+
+    def keyvault_set_secret(
+        vault_name: str,
+        secret_name: str,
+        secret_value: str,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Set a secret in Azure Key Vault."""
+        params = {
+            "operation": "set_secret",
+            "vault_name": vault_name,
+            "secret_name": secret_name,
+            "secret_value": secret_value,
+            **kwargs,
+        }
+        params = _add_subscription(params)
+        return _run_async(mcp_client.call_tool("keyvault", params))
+
+    def keyvault_get_secret(
+        vault_name: str,
+        secret_name: str,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Get a secret from Azure Key Vault."""
+        params = {
+            "operation": "get_secret",
+            "vault_name": vault_name,
+            "secret_name": secret_name,
+            **kwargs,
+        }
+        params = _add_subscription(params)
+        return _run_async(mcp_client.call_tool("keyvault", params))
+
+    # Specific Storage Operations
+    def create_storage_account(
+        account_name: str,
+        resource_group: str,
+        location: str = "eastus",
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Create a new Azure Storage Account."""
+        params = {
+            "operation": "create_account",
+            "account_name": account_name,
+            "resource_group": resource_group,
+            "location": location,
+            **kwargs,
+        }
+        params = _add_subscription(params)
+        return _run_async(mcp_client.call_tool("storage", params))
+
+    def create_blob_container(
+        account_name: str,
+        container_name: str,
+        resource_group: str | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """
+        Create a new blob container in a storage account.
+
+        Args:
+            account_name: Storage account name
+            container_name: Container name
+            resource_group: Resource group name (optional)
+
+        Returns:
+            Result of container creation
+        """
+        params = {
+            "operation": "create_container",
+            "account_name": account_name,
+            "container_name": container_name,
+            **kwargs,
+        }
+        if resource_group:
+            params["resource_group"] = resource_group
+        params = _add_subscription(params)
+        return _run_async(mcp_client.call_tool("storage", params))
+
+    def list_blob_containers(
+        account_name: str,
+        resource_group: str | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """List blob containers in a storage account."""
+        params = {
+            "operation": "list_containers",
+            "account_name": account_name,
+            **kwargs,
+        }
+        if resource_group:
+            params["resource_group"] = resource_group
+        params = _add_subscription(params)
+        return _run_async(mcp_client.call_tool("storage", params))
+
+    def upload_blob(
+        account_name: str,
+        container_name: str,
+        blob_name: str,
+        content: str,
+        resource_group: str | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """
+        Upload a blob to Azure Blob Storage.
+
+        Args:
+            account_name: Storage account name
+            container_name: Container name
+            blob_name: Blob name (path in container)
+            content: Content to upload
+            resource_group: Resource group name (optional)
+
+        Returns:
+            Result of blob upload
+        """
+        params = {
+            "operation": "upload_blob",
+            "account_name": account_name,
+            "container_name": container_name,
+            "blob_name": blob_name,
+            "content": content,
+            **kwargs,
+        }
+        if resource_group:
+            params["resource_group"] = resource_group
+        params = _add_subscription(params)
+        return _run_async(mcp_client.call_tool("storage", params))
+
+    def download_blob(
+        account_name: str,
+        container_name: str,
+        blob_name: str,
+        resource_group: str | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """
+        Download a blob from Azure Blob Storage.
+
+        Args:
+            account_name: Storage account name
+            container_name: Container name
+            blob_name: Blob name (path in container)
+            resource_group: Resource group name (optional)
+
+        Returns:
+            Blob content
+        """
+        params = {
+            "operation": "download_blob",
+            "account_name": account_name,
+            "container_name": container_name,
+            "blob_name": blob_name,
+            **kwargs,
+        }
+        if resource_group:
+            params["resource_group"] = resource_group
+        params = _add_subscription(params)
+        return _run_async(mcp_client.call_tool("storage", params))
+
+    def list_blobs(
+        account_name: str,
+        container_name: str,
+        prefix: str | None = None,
+        resource_group: str | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """List blobs in a container with optional prefix filter."""
+        params = {
+            "operation": "list_blobs",
+            "account_name": account_name,
+            "container_name": container_name,
+            **kwargs,
+        }
+        if prefix:
+            params["prefix"] = prefix
+        if resource_group:
+            params["resource_group"] = resource_group
+        params = _add_subscription(params)
+        return _run_async(mcp_client.call_tool("storage", params))
 
     # Build tool registry
     tools = {
-        # Key Vault tools
-        "list_key_vault_secrets": StructuredTool.from_function(
-            func=list_key_vault_secrets,
-            name="list_key_vault_secrets",
-            description="List all secrets in an Azure Key Vault by vault name",
-            args_schema=KeyVaultSecretsArgs,
-        ),
-        "get_key_vault_secret": StructuredTool.from_function(
-            func=get_key_vault_secret,
-            name="get_key_vault_secret",
-            description="Get a specific secret value from Azure Key Vault",
-            args_schema=KeyVaultSecretArgs,
-        ),
-        # Storage tools
-        "list_storage_containers": StructuredTool.from_function(
-            func=list_storage_containers,
-            name="list_storage_containers",
-            description="List all containers in an Azure Storage account",
-            args_schema=StorageContainersArgs,
-        ),
-        "list_storage_accounts": StructuredTool.from_function(
-            func=list_storage_accounts,
-            name="list_storage_accounts",
-            description="List all Azure Storage accounts in the subscription",
-        ),
-        # Resource Management tools
-        "list_resource_groups": StructuredTool.from_function(
+        # Resource Management
+        "group_list": StructuredTool.from_function(
             func=list_resource_groups,
-            name="list_resource_groups",
+            name="group_list",
             description="List all resource groups in the Azure subscription",
         ),
-        # Cosmos DB tools
-        "query_cosmos_db": StructuredTool.from_function(
-            func=query_cosmos_db,
-            name="query_cosmos_db",
-            description="Execute a SQL query against Azure Cosmos DB",
-            args_schema=CosmosQueryArgs,
+        "group_resource_list": StructuredTool.from_function(
+            func=list_resources_in_group,
+            name="group_resource_list",
+            description="List all resources in a specific resource group",
         ),
-        "list_cosmos_databases": StructuredTool.from_function(
-            func=list_cosmos_databases,
-            name="list_cosmos_databases",
-            description="List all databases in an Azure Cosmos DB account",
+        "subscription_list": StructuredTool.from_function(
+            func=list_subscriptions,
+            name="subscription_list",
+            description="List all Azure subscriptions available",
         ),
-        # SQL Database tools
-        "list_sql_databases": StructuredTool.from_function(
-            func=list_sql_databases,
-            name="list_sql_databases",
-            description="List all databases in an Azure SQL server",
-            args_schema=SQLDatabasesArgs,
+        # Azure Key Vault - Generic
+        "keyvault": StructuredTool.from_function(
+            func=keyvault_operation,
+            name="keyvault",
+            description="Perform Azure Key Vault operations (list secrets, get secrets, manage vaults)",
         ),
-        "list_sql_servers": StructuredTool.from_function(
-            func=list_sql_servers,
-            name="list_sql_servers",
-            description="List all Azure SQL servers in the subscription or resource group",
+        # Azure Key Vault - Specific Operations
+        "keyvault_create": StructuredTool.from_function(
+            func=create_keyvault,
+            name="keyvault_create",
+            description="Create a new Azure Key Vault in a resource group",
+        ),
+        "keyvault_list": StructuredTool.from_function(
+            func=list_keyvaults,
+            name="keyvault_list",
+            description="List Azure Key Vaults in a resource group or subscription",
+        ),
+        "keyvault_set_secret": StructuredTool.from_function(
+            func=keyvault_set_secret,
+            name="keyvault_set_secret",
+            description="Set a secret value in Azure Key Vault",
+        ),
+        "keyvault_get_secret": StructuredTool.from_function(
+            func=keyvault_get_secret,
+            name="keyvault_get_secret",
+            description="Get a secret value from Azure Key Vault",
+        ),
+        # Azure Storage - Generic
+        "storage": StructuredTool.from_function(
+            func=storage_operation,
+            name="storage",
+            description="Perform Azure Storage operations (list accounts, containers, blobs)",
+        ),
+        # Azure Storage - Specific Operations
+        "storage_create_account": StructuredTool.from_function(
+            func=create_storage_account,
+            name="storage_create_account",
+            description="Create a new Azure Storage Account",
+        ),
+        "storage_create_container": StructuredTool.from_function(
+            func=create_blob_container,
+            name="storage_create_container",
+            description="Create a new blob container in a storage account",
+        ),
+        "storage_list_containers": StructuredTool.from_function(
+            func=list_blob_containers,
+            name="storage_list_containers",
+            description="List blob containers in a storage account",
+        ),
+        "storage_upload_blob": StructuredTool.from_function(
+            func=upload_blob,
+            name="storage_upload_blob",
+            description="Upload a blob to Azure Blob Storage container",
+        ),
+        "storage_download_blob": StructuredTool.from_function(
+            func=download_blob,
+            name="storage_download_blob",
+            description="Download a blob from Azure Blob Storage container",
+        ),
+        "storage_list_blobs": StructuredTool.from_function(
+            func=list_blobs,
+            name="storage_list_blobs",
+            description="List blobs in a container with optional prefix filter",
+        ),
+        # Other Azure Services
+        "sql": StructuredTool.from_function(
+            func=sql_operation,
+            name="sql",
+            description="Perform Azure SQL operations (list servers, databases, query)",
+        ),
+        "cosmos": StructuredTool.from_function(
+            func=cosmos_operation,
+            name="cosmos",
+            description="Perform Azure Cosmos DB operations (list databases, query)",
+        ),
+        "compute": StructuredTool.from_function(
+            func=compute_operation,
+            name="compute",
+            description="Perform Azure Compute operations (VMs, scale sets, disks)",
+        ),
+        "acr": StructuredTool.from_function(
+            func=acr_operation,
+            name="acr",
+            description="Perform Azure Container Registry operations",
+        ),
+        "aks": StructuredTool.from_function(
+            func=aks_operation,
+            name="aks",
+            description="Perform Azure Kubernetes Service (AKS) operations",
         ),
     }
 
