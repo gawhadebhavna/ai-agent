@@ -10,6 +10,7 @@ class LLMToolDomain(str, Enum):
     auto = "auto"
     aws = "aws"
     azure = "azure"
+    azure_mcp = "azure_mcp"
     sap = "sap"
 
 

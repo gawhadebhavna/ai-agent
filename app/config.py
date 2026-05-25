@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     azure_storage_connection_string: str | None = None
     azure_container_name: str = "sap-api"
 
+    # Azure Authentication (AAD/Entra ID)
+    azure_token_credentials: str | None = None
+    azure_tenant_id: str | None = None
+    azure_client_id: str | None = None
+    azure_client_secret: str | None = None
+    azure_subscription_id: str | None = None
+
     # Databricks settings
     databricks_url: str | None = None
     databricks_token: str | None = None
