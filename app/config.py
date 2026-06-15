@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from functools import lru_cache
 from pathlib import Path
 
@@ -9,22 +8,29 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Migration Automation API"
+    app_name: str = "Migration AI Tool"
     app_env: str = "development"
-    aws_region: str = "ap-south-1"
+
+    # AWS (kept for potential future AWS paths)
+    aws_region: str = "us-east-1"
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_session_token: str | None = None
     aws_profile: str | None = None
-    allowed_buckets: str = "agentic-ai-migration-bkt"
-    allowed_prefixes_json: str = '{"agentic-ai-migration-bkt":["landing/"]}'
+    aws_secrets_manager_region: str | None = None
     sqlite_path: str = "./var/app.db"
-    llm_provider: str = "ollama"
+    llm_provider: str = "azure_openai"
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "gpt-oss:20b"
+    ollama_model: str = "llama3"
     openai_model: str = "gpt-4.1-mini"
     openai_api_key: str | None = None
-    approval_ttl_minutes: int = Field(default=30, ge=1)
+    approval_ttl_minutes: int = Field(default=60, ge=1)
+
+    # Conversation memory
+    max_conversation_history: int = 20
+
+    # Notebooks
+    notebooks_dir: str = "app/notebooks"
 
     # SAP API settings
     sap_ngrok_base_url: str | None = None
@@ -39,7 +45,7 @@ class Settings(BaseSettings):
 
     # Azure Blob Storage settings
     azure_storage_connection_string: str | None = None
-    azure_container_name: str = "sap-api"
+    azure_container_name: str = "migration"
 
     # Azure Authentication (AAD/Entra ID)
     azure_token_credentials: str | None = None
@@ -48,41 +54,34 @@ class Settings(BaseSettings):
     azure_client_secret: str | None = None
     azure_subscription_id: str | None = None
 
+    # Azure resources
+    azure_resource_group: str | None = None
+    azure_location: str = "eastus"
+    adf_factory_name: str | None = None
+
     # Databricks settings
     databricks_url: str | None = None
     databricks_token: str | None = None
-    databricks_job_id: int = 123
 
     # TLS / SSL
-    # Set to false on networks with corporate SSL inspection certificates
     ssl_verify: bool = True
-    # Optional custom CA bundle path for TLS verification (recommended on corporate proxies).
     ssl_ca_bundle: str | None = None
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(Path(__file__).resolve().parent.parent / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
-
-    @property
-    def allowed_bucket_list(self) -> list[str]:
-        return [item.strip() for item in self.allowed_buckets.split(",") if item.strip()]
-
-    @property
-    def allowed_prefixes(self) -> dict[str, list[str]]:
-        raw = json.loads(self.allowed_prefixes_json or "{}")
-        result: dict[str, list[str]] = {}
-        for bucket, prefixes in raw.items():
-            if isinstance(prefixes, str):
-                result[bucket] = [prefixes]
-            else:
-                result[bucket] = [str(item) for item in prefixes]
-        return result
 
     @property
     def sqlite_path_obj(self) -> Path:
         return Path(self.sqlite_path).expanduser().resolve()
+
+    @property
+    def notebooks_dir_obj(self):
+        from pathlib import Path as _Path
+        return _Path(self.notebooks_dir).expanduser().resolve()
 
     @property
     def has_explicit_aws_credentials(self) -> bool:
@@ -103,6 +102,10 @@ class Settings(BaseSettings):
     @property
     def has_sap_api_credentials(self) -> bool:
         return bool(self.sap_ngrok_base_url and self.sap_api_username and self.sap_api_password)
+
+    @property
+    def has_azure_service_principal(self) -> bool:
+        return bool(self.azure_tenant_id and self.azure_client_id and self.azure_client_secret)
 
     @property
     def ssl_verify_option(self) -> bool | str:

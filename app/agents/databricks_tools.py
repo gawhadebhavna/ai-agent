@@ -309,4 +309,146 @@ def build_databricks_tools(settings: Settings) -> dict[str, StructuredTool]:
         ),
     }
 
+    # ------------------------------------------------------------------
+    # Pipeline Config table operations (migration-specific)
+    # ------------------------------------------------------------------
+
+    def create_pipeline_config_table(
+        catalog: str = "hive_metastore",
+        schema: str = "migrations",
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Create the pipeline_config delta table that drives all migration notebooks."""
+        try:
+            ddl = f"""
+            CREATE TABLE IF NOT EXISTS {catalog}.{schema}.pipeline_config (
+                table_name          STRING NOT NULL,
+                source_system       STRING NOT NULL,
+                source_url_secret   STRING,
+                source_user_secret  STRING,
+                source_pass_secret  STRING,
+                landing_path        STRING,
+                bronze_table        STRING,
+                silver_table        STRING,
+                load_type           STRING DEFAULT 'full',
+                load_flag           BOOLEAN DEFAULT TRUE,
+                filter_condition    STRING,
+                key_columns         STRING,
+                last_run_ts         TIMESTAMP
+            )
+            USING DELTA
+            """
+            from databricks.sdk.service.sql import StatementState
+            result = client.statement_execution.execute_statement(
+                warehouse_id=kwargs.get("warehouse_id", ""),
+                statement=ddl,
+                catalog=catalog,
+                schema=schema,
+            )
+            return {
+                "status": "success",
+                "table": f"{catalog}.{schema}.pipeline_config",
+                "message": "pipeline_config table created or already exists",
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def upsert_pipeline_config_rows(
+        rows: list[dict[str, Any]],
+        catalog: str = "hive_metastore",
+        schema: str = "migrations",
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Insert or update rows in the pipeline_config delta table."""
+        try:
+            inserted = 0
+            for row in rows:
+                cols = ", ".join(row.keys())
+                vals = ", ".join(
+                    f"'{v}'" if isinstance(v, str) else str(v)
+                    for v in row.values()
+                )
+                merge_key = row.get("table_name", "")
+                sql = f"""
+                MERGE INTO {catalog}.{schema}.pipeline_config AS t
+                USING (SELECT '{merge_key}' AS table_name) AS s
+                ON t.table_name = s.table_name AND t.source_system = '{row.get('source_system', '')}'
+                WHEN MATCHED THEN UPDATE SET {', '.join(f"t.{k} = '{v}'" for k, v in row.items())}
+                WHEN NOT MATCHED THEN INSERT ({cols}) VALUES ({vals})
+                """
+                client.statement_execution.execute_statement(
+                    warehouse_id=kwargs.get("warehouse_id", ""),
+                    statement=sql,
+                    catalog=catalog,
+                    schema=schema,
+                )
+                inserted += 1
+            return {"status": "success", "rows_processed": inserted}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def list_pipeline_config(
+        catalog: str = "hive_metastore",
+        schema: str = "migrations",
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Query the pipeline_config delta table."""
+        try:
+            result = client.statement_execution.execute_statement(
+                warehouse_id=kwargs.get("warehouse_id", ""),
+                statement=f"SELECT * FROM {catalog}.{schema}.pipeline_config",
+                catalog=catalog,
+                schema=schema,
+            )
+            rows = []
+            if result.result and result.result.data_array:
+                schema_cols = [c.name for c in (result.manifest.schema.columns or [])]
+                for r in result.result.data_array:
+                    rows.append(dict(zip(schema_cols, r)))
+            return {"status": "success", "rows": rows, "count": len(rows)}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def run_notebook_job(
+        notebook_path: str,
+        parameters: dict[str, str] | None = None,
+        cluster_id: str | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Submit a notebook as a one-shot job run and return the run_id."""
+        return run_notebook(notebook_path, cluster_id=cluster_id, parameters=parameters or {})
+
+    def get_job_run_status(run_id: int, **kwargs) -> dict[str, Any]:
+        """Get status of a submitted notebook job run."""
+        return get_run_status(run_id)
+
+    # Register additional tools
+    tools.update({
+        "dbx_create_pipeline_config_table": StructuredTool.from_function(
+            func=create_pipeline_config_table,
+            name="dbx_create_pipeline_config_table",
+            description="Create the pipeline_config delta table that controls migration notebook execution.",
+        ),
+        "dbx_upsert_pipeline_config": StructuredTool.from_function(
+            func=upsert_pipeline_config_rows,
+            name="dbx_upsert_pipeline_config",
+            description="Insert or update rows in the pipeline_config delta table.",
+        ),
+        "dbx_list_pipeline_config": StructuredTool.from_function(
+            func=list_pipeline_config,
+            name="dbx_list_pipeline_config",
+            description="Query the pipeline_config delta table.",
+        ),
+        "dbx_run_notebook_job": StructuredTool.from_function(
+            func=run_notebook_job,
+            name="dbx_run_notebook_job",
+            description="Submit a Databricks notebook as a one-shot job run.",
+        ),
+        "dbx_get_job_run_status": StructuredTool.from_function(
+            func=get_job_run_status,
+            name="dbx_get_job_run_status",
+            description="Check the status of a Databricks notebook job run.",
+        ),
+    })
+
     return tools
