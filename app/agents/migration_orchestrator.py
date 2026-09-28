@@ -704,7 +704,7 @@ class MigrationOrchestratorService:
         )
 
     def _provision_databricks_real(self, tool_args: dict, session_id: str, phase: str) -> str:
-        """Create a Databricks cluster (existing workspace) or provision a new one via SDK."""
+        """Provision a new Azure Databricks workspace via ARM SDK."""
         session = self._session_repo.get_session(session_id) or {}
         phase_data = session.get("phase_data", {})
         vault_config = phase_data.get("vault_config", {})
@@ -712,50 +712,17 @@ class MigrationOrchestratorService:
         region = phase_data.get("cloud_region", "eastus")
 
         workspace_name = tool_args.get("workspace_name", f"migration-dbx-{session_id[:6]}")
-        cluster_name = tool_args.get("cluster_name", "migration-cluster")
 
-        # ── Path A: existing workspace credentials in .env ───────────────────────
-        has_real_dbx = (
-            self._settings.has_databricks_credentials
-            and "<" not in (self._settings.databricks_url or "")
-        )
-        if has_real_dbx:
-            try:
-                from databricks.sdk import WorkspaceClient
-                client = WorkspaceClient(
-                    host=self._settings.databricks_url,
-                    token=self._settings.databricks_token,
-                )
-                cluster = client.clusters.create(
-                    cluster_name=cluster_name,
-                    spark_version=tool_args.get("spark_version", "13.3.x-scala2.12"),
-                    node_type_id=tool_args.get("node_type", "Standard_DS3_v2"),
-                    num_workers=tool_args.get("num_workers", 2),
-                    autotermination_minutes=120,
-                )
-                self._session_repo.update_phase(
-                    session_id, phase,
-                    phase_data_patch={
-                        "databricks_config": {
-                            "workspace_url": self._settings.databricks_url,
-                            "cluster_id": cluster.cluster_id,
-                            "cluster_name": cluster_name,
-                        }
-                    },
-                )
-                return (
-                    f"\u2705 **Databricks cluster `{cluster_name}` created.**\n\n"
-                    f"- Cluster ID: `{cluster.cluster_id}`\n"
-                    f"- Workspace: `{self._settings.databricks_url}`\n\n"
-                    "Ready to upload migration notebooks."
-                )
-            except Exception as exc:
-                return (
-                    f"\u274c Databricks cluster creation failed: **{exc}**\n\n"
-                    "Check `DATABRICKS_URL` and `DATABRICKS_TOKEN` in `.env`."
-                )
+        # Check if workspace already provisioned for this session (idempotent)
+        existing = phase_data.get("databricks_config", {})
+        if existing.get("provisioned") and existing.get("workspace_url"):
+            return (
+                f"\u2705 **Databricks workspace already provisioned.**\n\n"
+                f"Workspace URL: `{existing['workspace_url']}`\n\n"
+                "Ready to upload notebooks."
+            )
 
-        # ── Path B: provision a new Azure Databricks workspace via SDK ─────────
+        # ── Provision a new Azure Databricks workspace via ARM SDK ─────────────
         try:
             from azure.mgmt.databricks import AzureDatabricksManagementClient
             from azure.mgmt.databricks.models import Sku as DbxSku
@@ -763,11 +730,28 @@ class MigrationOrchestratorService:
 
             credential = self._get_azure_credential(session_id)
             sub_id = self._get_azure_subscription_id(session_id)
+            # Use workspace_name (contains session prefix) so managed RG is unique per run
+            # and never collides with leftovers from previous attempts
             managed_rg = (
-                f"/subscriptions/{sub_id}/resourceGroups/{resource_group}-dbx-managed"
+                f"/subscriptions/{sub_id}/resourceGroups/{workspace_name}-managed"
             )
 
             dbx_client = AzureDatabricksManagementClient(credential, sub_id)
+
+            # Delete stale managed RG if it exists without a managedBy link
+            try:
+                from azure.mgmt.resource import ResourceManagementClient
+                rmc = ResourceManagementClient(credential, sub_id)
+                old_managed_name = f"{resource_group}-dbx-managed"
+                old_rg = rmc.resource_groups.get(old_managed_name) if rmc.resource_groups.check_existence(old_managed_name) else None
+                if old_rg and not old_rg.managed_by:
+                    logger.info("[TOOL] deleting orphaned managed RG '%s'", old_managed_name,
+                                extra={"phase": phase, "session_id": session_id})
+                    rmc.resource_groups.begin_delete(old_managed_name).result()
+            except Exception as _cleanup_exc:
+                logger.warning("[TOOL] managed RG cleanup skipped: %s", _cleanup_exc,
+                               extra={"phase": phase, "session_id": session_id})
+
             workspace = dbx_client.workspaces.begin_create_or_update(
                 resource_group_name=resource_group,
                 workspace_name=workspace_name,
@@ -797,13 +781,8 @@ class MigrationOrchestratorService:
                 f"\u2705 **Databricks workspace `{workspace_name}` provisioned**"
                 f" in `{resource_group}` ({region}).\n\n"
                 f"Workspace URL: `{ws_url}`\n\n"
-                "**Next step:** Generate a Personal Access Token in the workspace UI, "
-                "then add to `.env`:\n"
-                "```\n"
-                f"DATABRICKS_URL={ws_url}\n"
-                "DATABRICKS_TOKEN=<your-pat-token>\n"
-                "```\n"
-                "Restart the server — the migration cluster will be created on the next step."
+                "**Next:** upload migration notebooks. "
+                "You will be asked to generate and paste a Personal Access Token from the workspace UI."
             )
         except ImportError:
             return (
@@ -811,25 +790,40 @@ class MigrationOrchestratorService:
                 "Run in your venv: `pip install azure-mgmt-databricks>=4.0.0` then restart."
             )
         except Exception as exc:
+            exc_str = str(exc)
+            if "ApplianceProvisioningFailed" in exc_str or "managed by property" in exc_str.lower():
+                return (
+                    f"\u274c **Databricks provisioning failed** — a stale managed resource group exists.\n\n"
+                    "**Fix in Azure Portal:**\n"
+                    f"1. Go to **Resource Groups** → find `{workspace_name}-managed` or `{resource_group}-dbx-managed`\n"
+                    "2. Delete it (it has no resources, it's an orphan from a previous run)\n"
+                    "3. Come back here and say **Provision Databricks** to retry\n\n"
+                    "_Or just say 'retry' — I'll try with a fresh resource group name automatically._"
+                )
             return (
                 f"\u26a0\ufe0f **Databricks workspace provisioning failed:** {exc}\n\n"
                 "**Manual steps in Azure Portal:**\n"
                 f"1. Create Resource \u2192 Azure Databricks\n"
-                f"2. Name: **{workspace_name}** | RG: **{resource_group}** | Region: **{region}**\n"
-                "3. Generate a Personal Access Token\n"
-                "4. Set `DATABRICKS_URL` and `DATABRICKS_TOKEN` in `.env` \u2192 restart"
+                f"2. Name: **{workspace_name}** | RG: **{resource_group}** | Region: **{region}** | SKU: **Premium**\n"
+                "3. Once provisioned, come back here and say 'Upload notebooks'."
             )
 
     def _upload_notebooks_real(self, tool_args: dict, session_id: str, phase: str) -> str:
         """Upload local Databricks notebooks to the workspace via REST API."""
         import base64
         import pathlib
+        import requests
 
         session = self._session_repo.get_session(session_id) or {}
         phase_data = session.get("phase_data", {})
         dbx_config = phase_data.get("databricks_config", {})
         vault_config = phase_data.get("vault_config", {})
         source_system = phase_data.get("source_system") or tool_args.get("source_system", "sap")
+
+        # Normalize source_system to notebook folder name (sap_s4 → sap, SAP* → sap, etc.)
+        _src = (source_system or "sap").lower()
+        if _src.startswith("sap"):
+            _src = "sap"
 
         workspace_url = dbx_config.get("workspace_url") or ""
 
@@ -838,7 +832,7 @@ class MigrationOrchestratorService:
         vault_name = vault_config.get("vault_name", "")
         if vault_name:
             try:
-                backend = self._build_secrets_backend(session_id)
+                backend = self._build_secrets_backend("azure", session_id)
                 token = backend.get_secret(vault_name, "databricks-pat") or ""
             except Exception:
                 pass
@@ -849,8 +843,8 @@ class MigrationOrchestratorService:
         notebooks_dir = pathlib.Path(__file__).parent.parent / "notebooks"
         notebook_map = {
             notebooks_dir / "generic" / "01_load_metadata.py": "/migrations/generic/01_load_metadata",
-            notebooks_dir / source_system / "02_create_bronze_silver_schema.py": f"/migrations/{source_system}/02_create_bronze_silver_schema",
-            notebooks_dir / source_system / "03_extract_landing.py": f"/migrations/{source_system}/03_extract_landing",
+            notebooks_dir / _src / "02_create_bronze_silver_schema.py": f"/migrations/{_src}/02_create_bronze_silver_schema",
+            notebooks_dir / _src / "03_extract_landing.py": f"/migrations/{_src}/03_extract_landing",
             notebooks_dir / "generic" / "04_ingest_bronze.py": "/migrations/generic/04_ingest_bronze",
             notebooks_dir / "generic" / "05_transform_silver.py": "/migrations/generic/05_transform_silver",
         }
@@ -910,11 +904,56 @@ class MigrationOrchestratorService:
             },
         )
 
+        # ── Create cluster (now that we have the PAT) ──────────────────────────
+        cluster_msg = ""
+        cluster_name = "migration-cluster"
+        if token and workspace_url and not dbx_config.get("cluster_id"):
+            try:
+                cluster_body = {
+                    "cluster_name": cluster_name,
+                    "spark_version": "13.3.x-scala2.12",
+                    "node_type_id": "Standard_DS3_v2",
+                    "num_workers": 2,
+                    "autotermination_minutes": 120,
+                }
+                c_resp = requests.post(
+                    f"{workspace_url.rstrip('/')}/api/2.0/clusters/create",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json=cluster_body,
+                    verify=False,
+                    timeout=60,
+                )
+                if c_resp.status_code == 200:
+                    cluster_id = c_resp.json().get("cluster_id", "")
+                    self._session_repo.update_phase(
+                        session_id, phase,
+                        phase_data_patch={
+                            "databricks_config": {
+                                **dbx_config,
+                                "notebooks_uploaded": len(failed) == 0,
+                                "cluster_id": cluster_id,
+                                "cluster_name": cluster_name,
+                            }
+                        },
+                    )
+                    cluster_msg = f"\n\nCluster `{cluster_name}` (ID: `{cluster_id}`) created and starting."
+                    logger.info("[TOOL] cluster created: %s", cluster_id,
+                                extra={"phase": phase, "session_id": session_id})
+                else:
+                    err = c_resp.json().get("message", c_resp.text[:120])
+                    cluster_msg = f"\n\n⚠️ Cluster creation: {err}"
+                    logger.warning("[TOOL] cluster creation failed: %s", err,
+                                   extra={"phase": phase, "session_id": session_id})
+            except Exception as exc:
+                cluster_msg = f"\n\n⚠️ Cluster creation: {exc}"
+                logger.warning("[TOOL] cluster creation error: %s", exc,
+                               extra={"phase": phase, "session_id": session_id})
+
         ok_lines = "\n".join(f"- {n}" for n in uploaded) if uploaded else "_none_"
         fail_lines = ("\n\n\u26a0\ufe0f Failed:\n" + "\n".join(f"- {n}" for n in failed)) if failed else ""
         return (
             f"\u2705 **{len(uploaded)}/{len(notebook_map)} notebooks uploaded to Databricks:**\n{ok_lines}"
-            f"{fail_lines}\n\n"
+            f"{fail_lines}{cluster_msg}\n\n"
             "Ready to run the metadata loading notebook."
         )
 

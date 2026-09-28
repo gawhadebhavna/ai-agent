@@ -34,6 +34,15 @@ def create_session(
     return orchestrator.create_session()
 
 
+@router.get("/sessions")
+def list_sessions(
+    session_repo: SessionRepository = Depends(get_session_repository),
+) -> dict:
+    """Return all sessions (newest first) for session switcher."""
+    sessions = session_repo.list_sessions()
+    return {"sessions": sessions}
+
+
 # ---------------------------------------------------------------------------
 # Main chat endpoint
 # ---------------------------------------------------------------------------
@@ -66,7 +75,7 @@ def send_message(
 @router.get("/{session_id}/history")
 def get_history(
     session_id: str,
-    limit: int = 30,
+    limit: int = 50,
     session_repo: SessionRepository = Depends(get_session_repository),
 ) -> dict:
     """Return paginated redacted conversation history for a session."""
@@ -74,11 +83,7 @@ def get_history(
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
     history = session_repo.get_history(session_id, limit=limit)
-    return {
-        "session_id": session_id,
-        "history": history,
-        "count": len(history),
-    }
+    return {"history": history}
 
 
 # ---------------------------------------------------------------------------

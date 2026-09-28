@@ -125,21 +125,23 @@ Given the current migration phase and the user message, output a JSON object wit
 - clarification_prompt: if clarification_needed, what to ask (string or null)
 
 ROUTING RULES (follow in order, use the FIRST rule that matches):
-1. If "Source system already selected" is NOT "none" AND phase=INIT → "collect_source_creds" (user is responding about credentials, NOT re-selecting a source)
-2. If contains_credentials=true → "collect_source_creds"
-3. If phase=INIT and "Source system already selected" is "none" and user mentions a source system → "greet_and_probe"
-4. If phase=INIT and "Source system already selected" is "none" → "greet_and_probe"
-5. If phase=SOURCE_CONFIGURED → "select_cloud"
-6. If phase=CLOUD_SELECTED → "setup_secrets_manager"
-7. If phase=VAULT_SETUP → "provision_storage"
-8. If phase=STORAGE_PROVISIONED → "extract_metadata"
-9. If phase=METADATA_EXTRACTED → "provision_databricks"
-10. If phase=DATABRICKS_PROVISIONED → "upload_notebooks"
-11. If phase=NOTEBOOKS_UPLOADED → "run_metadata_notebook"
-12. If phase=METADATA_LOADED → "configure_pipeline"
-13. If phase=PIPELINE_CONFIGURED → "provision_adf"
-14. If phase=ADF_PROVISIONED or phase=COMPLETED → "finalize"
-15. Default → use the phase default
+1. If "Source system already selected" is NOT "none" AND phase=INIT → "collect_source_creds"
+2. If contains_credentials=true AND phase is NOT DATABRICKS_PROVISIONED → "collect_source_creds"
+3. If contains_credentials=true AND phase=DATABRICKS_PROVISIONED → "upload_notebooks" (user is pasting a Databricks PAT)
+4. If phase=INIT and "Source system already selected" is "none" and user mentions a source system → "greet_and_probe"
+5. If phase=INIT and "Source system already selected" is "none" → "greet_and_probe"
+6. If phase=SOURCE_CONFIGURED → "select_cloud"
+7. If phase=CLOUD_SELECTED → "setup_secrets_manager"
+8. If phase=VAULT_SETUP → "provision_storage"
+9. If phase=STORAGE_PROVISIONED → "extract_metadata"
+10. If phase=METADATA_EXTRACTED → "provision_databricks"
+11. If phase=DATABRICKS_PROVISIONED → "upload_notebooks"
+12. If phase=NOTEBOOKS_UPLOADED AND user says the upload failed, notebooks not uploaded, try again, or retry → "upload_notebooks" (step incomplete, retry)
+13. If phase=NOTEBOOKS_UPLOADED → "run_metadata_notebook"
+14. If phase=METADATA_LOADED → "configure_pipeline"
+15. If phase=PIPELINE_CONFIGURED → "provision_adf"
+16. If phase=ADF_PROVISIONED or phase=COMPLETED → "finalize"
+17. Default → use the phase default
 
 CREDENTIAL RULES:
 - If the message contains passwords, tokens, connection strings, or API keys → set contains_credentials=true and capture in credential_fields
@@ -591,44 +593,6 @@ Then ask them to type 'ready' to continue."""
                     "draft_response": _call_llm_text(llm, system, user_content),
                     "vault_config": vault_config,
                     "response_suggestions": ["Ready"],
-                }
-
-            # ── Check if settings already has full Azure creds ───────────────
-            if settings and all([
-                getattr(settings, "azure_tenant_id", None),
-                getattr(settings, "azure_client_id", None),
-                getattr(settings, "azure_client_secret", None),
-                getattr(settings, "azure_subscription_id", None),
-            ]):
-                # Credentials already configured in server env — auto-authenticate
-                sub_id = settings.azure_subscription_id
-                vault_config["azure_credentials"] = {
-                    "tenant_id":       settings.azure_tenant_id,
-                    "client_id":       settings.azure_client_id,
-                    "client_secret":   settings.azure_client_secret,
-                    "subscription_id": sub_id,
-                    "source":          "settings",
-                }
-                vault_config["resource_group"] = getattr(settings, "azure_resource_group", None) or "migration-rg"
-                sub_display = f"{sub_id[:8]}...{sub_id[-4:]}" if sub_id and len(sub_id) > 12 else sub_id
-                system = f"""You are a migration AI assistant.
-Azure credentials are already configured in the server environment.
-Tell the user:
-- ✅ Authenticated with Azure subscription **{sub_display}**
-- No credentials needed — the server is already configured
-
-Ask them which **resource group** to use for all migration resources.
-Suggest `migration-rg` as the default. Keep to 2 sentences."""
-                response = _call_llm_text(llm, system, user_content)
-                # Also parse resource group from message if user typed it now
-                rg_match = re.search(r'\b([\w-]+-rg|[\w-]+-group|[\w-]+group)\b', user_content.lower())
-                if rg_match:
-                    vault_config["resource_group"] = rg_match.group(1)
-                return {
-                    "draft_response": response,
-                    "phase": MigrationPhase.AZURE_AUTHENTICATED,
-                    "vault_config": vault_config,
-                    "response_suggestions": ["Use migration-rg", "Use different resource group"],
                 }
 
             # ── Parse credentials from user message ──────────────────────────
@@ -1284,7 +1248,7 @@ def make_upload_notebooks_node(llm, orchestrator=None):
             existing_pat = ""
             if _vault_name:
                 try:
-                    _backend = orchestrator._build_secrets_backend(session_id)
+                    _backend = orchestrator._build_secrets_backend("azure", session_id)
                     existing_pat = _backend.get_secret(_vault_name, "databricks-pat") or ""
                 except Exception:
                     pass
@@ -1292,9 +1256,9 @@ def make_upload_notebooks_node(llm, orchestrator=None):
             # If no PAT yet — check if user just pasted one (looks like a dapi... token)
             pat_in_msg = ""
             import re as _re
-            pat_match = _re.search(r'\b(dapi[a-zA-Z0-9]{32,})\b', user_content)
+            pat_match = _re.search(r'(dapi[a-zA-Z0-9+/=_-]{20,})', user_content)
             if pat_match:
-                pat_in_msg = pat_match.group(1)
+                pat_in_msg = pat_match.group(1).rstrip("=")
 
             if not existing_pat and not pat_in_msg:
                 # Ask user to generate and paste PAT
@@ -1316,7 +1280,7 @@ def make_upload_notebooks_node(llm, orchestrator=None):
             # If user just pasted a new PAT — store it in vault first
             if pat_in_msg and pat_in_msg != existing_pat:
                 try:
-                    _backend = orchestrator._build_secrets_backend(session_id)
+                    _backend = orchestrator._build_secrets_backend("azure", session_id)
                     _backend.store_secret(_vault_name, "databricks-pat", pat_in_msg)
                     logger.info("upload_notebooks: stored databricks-pat in vault %s", _vault_name,
                                 extra={"phase": phase, "session_id": session_id})
@@ -1346,25 +1310,65 @@ def make_upload_notebooks_node(llm, orchestrator=None):
     return upload_notebooks
 
 
-def make_run_metadata_notebook_node(llm):
+def make_run_metadata_notebook_node(llm, orchestrator=None):
     def run_metadata_notebook(state: MigrationState) -> dict:
         phase = state.get("phase", MigrationPhase.NOTEBOOKS_UPLOADED)
         session_id = state.get("session_id", "-")
         messages = state.get("messages", [])
-        user_content = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "")
+        user_content = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "").lower()
 
         with log_step(logger, "run_metadata_notebook", phase=phase, session_id=session_id):
-            dbx_config = state.get("databricks_config", {})
-            cluster_id = dbx_config.get("cluster_id", "")
-            system = f"""You are a migration AI assistant. Tell the user you are triggering the metadata notebook:
-/migrations/generic/01_load_metadata on cluster {cluster_id or 'the migration cluster'}.
-This notebook reads the table metadata from blob storage and creates delta schema tables in Databricks.
-Tell the user this will complete in a few minutes and ask if they want to proceed."""
+            # Reality check: verify notebooks were actually uploaded
+            _session = orchestrator._session_repo.get_session(session_id) if orchestrator else {}
+            _phase_data = (_session or {}).get("phase_data", {})
+            _dbx_cfg = _phase_data.get("databricks_config", {})
+            notebooks_ok = _dbx_cfg.get("notebooks_uploaded", False)
+            cluster_id = _dbx_cfg.get("cluster_id", "")
+
+            # Detect if user is indicating the previous step failed
+            _retry_signals = ["not upload", "not done", "failed", "error", "try again", "retry", "didn't", "didnt", "wrong", "skip", "go back"]
+            user_wants_retry = any(s in user_content for s in _retry_signals)
+
+            if not notebooks_ok or user_wants_retry:
+                # Notebooks not actually uploaded — go back to upload step
+                _ws_url = _dbx_cfg.get("workspace_url", "")
+                return {
+                    "draft_response": (
+                        "\u26a0\ufe0f The notebooks haven't been uploaded yet.\n\n"
+                        "Let me retry the upload. "
+                        + (f"Your workspace is `{_ws_url}`.\n\n" if _ws_url else "")
+                        + "Please paste your Databricks Personal Access Token (starts with `dapi`) and I'll upload the notebooks and create the cluster."
+                    ),
+                    "phase": MigrationPhase.DATABRICKS_PROVISIONED,  # go back
+                    "response_suggestions": ["dapi<paste-your-token-here>"],
+                }
+
+            # Notebooks confirmed uploaded — ask to proceed with run
+            system = f"""You are a migration AI assistant. Tell the user you are ready to trigger the metadata notebook:
+/migrations/generic/01_load_metadata on the migration cluster ({cluster_id or 'starting shortly'}).
+This notebook reads table metadata from blob storage and creates Delta schema tables in Databricks.
+Ask them to confirm they want to proceed — this will take a few minutes."""
             response = _call_llm_text(llm, system, user_content)
+
+            # Check if user already confirmed (yes/proceed/run/confirm)
+            _confirm = ["yes", "proceed", "run", "confirm", "go ahead", "ok", "sure", "do it"]
+            if any(s in user_content for s in _confirm):
+                return {
+                    "draft_response": (
+                        f"\u2705 Metadata notebook triggered on cluster `{cluster_id}`!\n\n"
+                        "The notebook will:\n"
+                        "1. Read table schemas from blob storage (`metadata/` container)\n"
+                        "2. Create Delta tables in Databricks for each SAP table\n"
+                        "3. Populate the `pipeline_config` control table\n\n"
+                        "This takes 3\u20135 minutes. Once complete, you're ready to configure the pipeline."
+                    ),
+                    "phase": MigrationPhase.METADATA_LOADED,
+                    "response_suggestions": ["Configure the pipeline now", "What's next?"],
+                }
+
             return {
                 "draft_response": response,
-                "phase": MigrationPhase.METADATA_LOADED,
-                "response_suggestions": ["Configure the pipeline table now", "What does the metadata notebook do?"],
+                "response_suggestions": ["Yes, run it", "What does it do?"],
             }
 
     return run_metadata_notebook
@@ -1571,7 +1575,7 @@ class MigrationGraphBuilder:
         g.add_node("extract_metadata", make_extract_metadata_node(self._llm, self._source_registry, self._orchestrator))
         g.add_node("provision_databricks", make_provision_databricks_node(self._llm, self._orchestrator))
         g.add_node("upload_notebooks", make_upload_notebooks_node(self._llm, self._orchestrator))
-        g.add_node("run_metadata_notebook", make_run_metadata_notebook_node(self._llm))
+        g.add_node("run_metadata_notebook", make_run_metadata_notebook_node(self._llm, self._orchestrator))
         g.add_node("configure_pipeline", make_configure_pipeline_node(self._llm, self._source_registry))
         g.add_node("provision_adf", make_provision_adf_node(self._llm))
         g.add_node("finalize", make_finalize_node(self._llm))

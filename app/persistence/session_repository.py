@@ -222,6 +222,22 @@ class SessionRepository:
             ).fetchall()
         return list(reversed([dict(r) for r in rows]))
 
+    def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return summary rows for all sessions, newest first."""
+        with closing(sqlite3.connect(self._db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT session_id, migration_phase, cloud_provider, source_system,
+                       created_at, updated_at
+                FROM sessions
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Pending approvals
     # ------------------------------------------------------------------
