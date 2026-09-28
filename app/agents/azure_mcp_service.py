@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+UTC = timezone.utc
 
 from app.agents.databricks_tools import build_databricks_tools
 from app.agents.mcp_client import AzureMCPClient

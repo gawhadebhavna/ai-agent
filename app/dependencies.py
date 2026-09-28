@@ -2,24 +2,18 @@ from __future__ import annotations
 
 from fastapi import Request
 
-from app.agents.unified_service import UnifiedLLMService
-from app.core.exceptions import ProviderConfigurationError
-from app.services.blob import AzureBlobService
-from app.services.s3 import S3Service
+from app.agents.migration_orchestrator import MigrationOrchestratorService
+from app.agents.source_registry import SourceSystemRegistry
+from app.persistence.session_repository import SessionRepository
 
 
-def get_s3_service(request: Request) -> S3Service:
-    return request.app.state.s3_service
+def get_session_repository(request: Request) -> SessionRepository:
+    return request.app.state.session_repository
 
 
-def get_blob_service(request: Request) -> AzureBlobService:
-    service = request.app.state.blob_service
-    if service is None:
-        raise ProviderConfigurationError(
-            "Azure Blob Storage is not available. Configure AZURE_STORAGE_CONNECTION_STRING."
-        )
-    return service
+def get_migration_orchestrator(request: Request) -> MigrationOrchestratorService:
+    return request.app.state.migration_orchestrator
 
 
-def get_unified_llm_service(request: Request) -> UnifiedLLMService:
-    return request.app.state.unified_llm_service
+def get_source_registry(request: Request) -> SourceSystemRegistry:
+    return request.app.state.source_registry
