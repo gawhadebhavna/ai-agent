@@ -34,6 +34,15 @@ def create_session(
     return orchestrator.create_session()
 
 
+@router.get("/sessions")
+def list_sessions(
+    limit: int = 50,
+    session_repo: SessionRepository = Depends(get_session_repository),
+) -> dict:
+    """List recent sessions (newest first) for the session switcher."""
+    return {"sessions": session_repo.list_sessions(limit=max(1, min(limit, 200)))}
+
+
 # ---------------------------------------------------------------------------
 # Main chat endpoint
 # ---------------------------------------------------------------------------

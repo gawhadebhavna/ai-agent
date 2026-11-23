@@ -53,7 +53,7 @@ def _request_approval(
         "summary": title,
         "details": details,
         "cloud_resource_type": resource_type,
-        "message": f"**Approval needed: {title}**\n\n{lines}\n\nReply **yes** to go ahead, or tell me what to change.",
+        "message": f"**Approval needed: {title}**\n\n{lines}\n\nUse **Approve** / **Reject** below, or tell me what to change.",
     })
     if isinstance(decision, dict) and decision.get("approved") is not None:
         return bool(decision["approved"]), ""

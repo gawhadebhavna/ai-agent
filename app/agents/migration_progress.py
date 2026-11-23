@@ -285,7 +285,7 @@ def next_step(s: MigrationSnapshot) -> str:
 
 def suggestions_for(s: MigrationSnapshot, source_names: list[str], approval_pending: bool) -> list[str]:
     if approval_pending:
-        return ["Approve", "Cancel"]
+        return []
     if not s.source_system:
         return source_names
     if not s.cloud_provider:
@@ -295,7 +295,7 @@ def suggestions_for(s: MigrationSnapshot, source_names: list[str], approval_pend
     if s.cloud_provider != "azure":
         return ["Switch to Azure"]
     if s.azure_creds_missing:
-        return ["How do I create a service principal?", "I have my credentials"]
+        return ["I have my credentials", "Service principal guide"]
     if not s.vault_ready:
         return [f"Use {s.resource_group}", "Use a different resource group"]
     if s.source_creds_missing:
@@ -307,14 +307,14 @@ def suggestions_for(s: MigrationSnapshot, source_names: list[str], approval_pend
     if not s.databricks_ready:
         return ["Provision Databricks", "What cluster size?"]
     if not s.notebooks_ready:
-        return ["Upload notebooks"] if s.databricks_pat_available else ["How do I create a PAT?"]
+        return ["Upload notebooks"] if s.databricks_pat_available else ["Show PAT setup steps"]
     if not s.metadata_loaded:
         return ["I've run the metadata notebook", "What does it do?"]
     if not s.pipeline_configured:
         return ["Include all tables", "Let me pick tables"]
     if not s.adf_ready:
         return ["Create Data Factory", "What does ADF do here?"]
-    return ["Show summary", "How do I trigger a run?"]
+    return ["Show summary", "Explain how to trigger a run"]
 
 
 def render_status(s: MigrationSnapshot) -> str:
