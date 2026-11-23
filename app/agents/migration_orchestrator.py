@@ -7,11 +7,27 @@ UTC = timezone.utc
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import HumanMessage
+import sqlite3
+import threading
 
-from app.agents.memory_service import ConversationMemoryService
-from app.agents.migration_graph import MigrationGraphBuilder, MigrationState
+import requests
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command
+
+from app.agents.chat_agent import build_chat_agent
+from app.agents.migration_progress import (
+    AZURE_REGIONS,
+    MigrationSnapshot,
+    build_snapshot,
+    derive_phase,
+    next_step,
+    render_status,
+    suggestions_for,
+)
+from app.agents.migration_tools import build_migration_tools
 from app.agents.model_factory import build_runtime_chat_model
+from app.agents.secret_capture import capture_credentials
 from app.agents.secrets_tools import build_secrets_backend
 from app.agents.source_registry import SourceSystemRegistry
 from app.config import Settings
@@ -28,14 +44,27 @@ from app.schemas.chat import (
 logger = get_logger("migration.orchestrator")
 
 _APPROVAL_TTL_MINUTES = 60
+_RECURSION_LIMIT = 40
+_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "agent_system_prompt.txt"
+
+
+def public_phase_data(phase_data: dict[str, Any]) -> dict[str, Any]:
+    """Copy of phase_data that is safe to return to the browser (no credential values)."""
+    safe = dict(phase_data or {})
+    vault_config = dict(safe.get("vault_config", {}) or {})
+    creds = vault_config.pop("azure_credentials", None)
+    if creds:
+        vault_config["azure_credentials_collected"] = sorted(k for k, v in creds.items() if v and k != "source")
+    safe["vault_config"] = vault_config
+    return safe
 
 
 class MigrationOrchestratorService:
     """
     Entry point for the stateful migration chat.
 
-    Each call resumes the LangGraph from the stored SQLite checkpoint
-    keyed by session_id.
+    Conversation memory lives in a LangGraph checkpoint keyed by session_id;
+    migration facts live in the session repository and are re-read every turn.
     """
 
     def __init__(
@@ -52,22 +81,22 @@ class MigrationOrchestratorService:
         # Build LLM
         self._llm = build_runtime_chat_model(settings)
 
-        # Memory service
-        self._memory = ConversationMemoryService(session_repo, self._llm)
+        # Source credentials typed before the vault exists; held in memory only, never persisted.
+        self._pending_secrets: dict[str, dict[str, str]] = {}
+        self._pending_lock = threading.Lock()
 
-        # SQLite checkpointer — disabled: our session_repo handles all persistence.
-        # SqliteSaver causes message doubling and checkpoint/phase conflicts when
-        # state is also reconstructed from session_repo on every call.
-        self._checkpointer = None
+        self._prompt_template = _PROMPT_PATH.read_text(encoding="utf-8")
 
-        # Build graph
-        self._graph = MigrationGraphBuilder(
-            llm=self._llm,
-            source_registry=source_registry,
-            secrets_backend_factory=self._build_secrets_backend,
-            settings=settings,
-            orchestrator=self,
-        ).compile(checkpointer=self._checkpointer)
+        checkpoint_path = settings.sqlite_path_obj.with_name("agent_checkpoints.db")
+        self._checkpointer = SqliteSaver(sqlite3.connect(str(checkpoint_path), check_same_thread=False))
+
+        self._graph = build_chat_agent(
+            self._llm,
+            build_migration_tools(self),
+            self._build_system_prompt,
+            self._checkpointer,
+            parallel_tool_calls=False if settings.llm_provider in ("openai", "azure_openai") else None,
+        )
 
         # Azure MCP tools — optional primary path; Azure SDK is always the fallback
         self._mcp_tools: dict = {}
@@ -112,242 +141,217 @@ class MigrationOrchestratorService:
                 migration_phase=MigrationPhase.INIT,
             )
 
-        # Handle approval resolution
-        if approval_id is not None and approve is not None:
-            return self._handle_approval(session_id, approval_id, approve, session)
-
-        return self._run_graph(session_id, message, session)
-
-    # ------------------------------------------------------------------
-    # Graph invocation
-    # ------------------------------------------------------------------
-
-    def _run_graph(self, session_id: str, message: str, session: dict) -> ChatResponse:
+        config = {"configurable": {"thread_id": session_id}, "recursion_limit": _RECURSION_LIMIT}
         phase = session.get("migration_phase", MigrationPhase.INIT)
 
-        with log_step(logger, "run_graph", phase=phase, session_id=session_id):
-            # Load conversation history
-            history_messages = self._memory.load_messages(session_id)
+        with log_step(logger, "chat_turn", phase=phase, session_id=session_id):
+            pending = self._pending_interrupt(config)
 
-            # Initial graph state
-            initial_state: dict[str, Any] = {
-                "session_id": session_id,
-                "phase": phase,
-                "messages": history_messages + [HumanMessage(content=message)],
-                "inbound_review": {},
-                "outbound_review": {},
-                "regen_attempt": 0,
-                "source_system": session["phase_data"].get("source_system"),
-                "source_config": session["phase_data"].get("source_config", {}),
-                "cloud_provider": session.get("cloud_provider"),
-                "cloud_region": session["phase_data"].get("cloud_region"),
-                "secrets_backend": session.get("cloud_provider"),
-                "vault_config": session["phase_data"].get("vault_config", {}),
-                "storage_config": session["phase_data"].get("storage_config", {}),
-                "databricks_config": session["phase_data"].get("databricks_config", {}),
-                "adf_config": session["phase_data"].get("adf_config", {}),
-                "pipeline_tables": session["phase_data"].get("pipeline_tables", []),
-                "pending_approval": None,
-                "draft_response": "",
-                "response_message": "",
-                "response_status": "ok",
-                "response_suggestions": [],
-                "response_phase_data": {},
-            }
-
-            config = {"configurable": {"thread_id": session_id}}
+            if approval_id is not None and approve is not None:
+                if pending is None:
+                    self._session_repo.resolve_approval(approval_id, "expired")
+                    return self._build_response(
+                        session_id, "That action is no longer pending. What would you like to do next?", None
+                    )
+                logged_user_text = "Approved" if approve else "Rejected"
+                graph_input: Any = Command(resume={"approved": approve})
+                self._resolve_open_approvals(session_id, "approved" if approve else "rejected")
+            else:
+                logged_user_text = self._capture_secrets(session_id, message)
+                if pending is not None:
+                    graph_input = Command(resume={"reply": logged_user_text})
+                    self._resolve_open_approvals(session_id, "answered")
+                else:
+                    graph_input = {"messages": [HumanMessage(content=logged_user_text)]}
 
             try:
-                result = self._graph.invoke(initial_state, config=config)
+                result = self._graph.invoke(graph_input, config)
             except Exception as exc:
-                logger.error(
-                    "Graph invocation failed: %s",
-                    exc,
-                    extra={"phase": phase, "session_id": session_id},
-                )
+                logger.error("Agent turn failed: %s", exc, exc_info=True,
+                             extra={"phase": phase, "session_id": session_id})
                 return ChatResponse(
                     session_id=session_id,
-                    message=f"I encountered an error: {exc}. Please try again.",
+                    message="Sorry, I hit a problem while processing that. Your progress is saved; please try again.",
                     status=ChatStatus.error,
                     migration_phase=MigrationPhase(phase),
                 )
 
-        # Extract results
-        new_phase = result.get("phase", phase)
-        response_message = result.get("response_message", "")
-        response_status = result.get("response_status", "ok")
-        suggestions = result.get("response_suggestions", [])
-        pending_approval = result.get("pending_approval")
+            new_pending = self._pending_interrupt(config)
+            reply = self._final_text(result, new_pending)
+            self._session_repo.append_message(session_id, "user", logged_user_text)
+            self._session_repo.append_message(session_id, "assistant", reply)
+            return self._build_response(session_id, reply, new_pending)
 
-        # Persist conversation turn
-        self._memory.save_turn(session_id, message, response_message)
+    # ------------------------------------------------------------------
+    # Turn helpers
+    # ------------------------------------------------------------------
 
-        # Build phase_data patch from result
-        # Use truthiness (not just not-None) so empty dicts/lists from LangGraph
-        # state initialisation don't overwrite data already stored by the orchestrator
-        phase_patch: dict[str, Any] = {}
-        for key in ("source_system", "source_config", "vault_config", "storage_config", "databricks_config", "adf_config", "pipeline_tables"):
-            val = result.get(key)
-            if val:  # skip None AND empty dict/list
-                phase_patch[key] = val
-        if result.get("cloud_region"):
-            phase_patch["cloud_region"] = result["cloud_region"]
+    def snapshot(self, session_id: str) -> MigrationSnapshot:
+        session = self._session_repo.get_session(session_id) or {"phase_data": {}}
+        with self._pending_lock:
+            pending_names = list(self._pending_secrets.get(session_id, {}).keys())
+        return build_snapshot(session, self._settings, self._source_registry, pending_names)
 
-        # Persist phase update
-        self._session_repo.update_phase(
-            session_id,
-            new_phase,
-            phase_data_patch=phase_patch,
-            cloud_provider=result.get("cloud_provider"),
-            source_system=result.get("source_system"),
+    def _build_system_prompt(self, session_id: str) -> str:
+        snap = self.snapshot(session_id)
+        sources = "\n".join(f"- {s.id}: {s.display_name} — {s.description}" for s in self._source_registry.list_sources())
+        regions = ", ".join(f"{code}: {name}" for code, name in AZURE_REGIONS.items())
+        pending_note = ""
+        if self._session_repo.list_pending_approvals(session_id):
+            pending_note = "\nAn approval card is currently waiting for the user's decision.\n"
+        return (
+            self._prompt_template
+            .replace("{{SOURCES}}", sources)
+            .replace("{{AZURE_REGIONS}}", regions)
+            .replace("{{STATUS}}", render_status(snap))
+            .replace("{{PENDING}}", pending_note)
+            .replace("{{NEXT_STEP}}", next_step(snap))
         )
 
-        # Persist pending approval if any
-        approval_items: list[ApprovalItem] = []
-        if pending_approval:
-            new_approval_id = str(uuid.uuid4())
-            expires_at = datetime.now(UTC) + timedelta(minutes=_APPROVAL_TTL_MINUTES)
+    def _pending_interrupt(self, config: dict):
+        interrupts = self._graph.get_state(config).interrupts
+        return interrupts[0] if interrupts else None
+
+    @staticmethod
+    def _message_text(message: AIMessage) -> str:
+        content = message.content
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
+        return (content or "").strip()
+
+    def _final_text(self, result: dict, pending) -> str:
+        last_ai = next((m for m in reversed(result.get("messages", [])) if isinstance(m, AIMessage)), None)
+        text = self._message_text(last_ai) if last_ai is not None else ""
+        if pending is not None:
+            card = (pending.value or {}).get("message", "") if isinstance(pending.value, dict) else str(pending.value)
+            return f"{text}\n\n{card}".strip() if text else card
+        return text or "Done. What would you like to do next?"
+
+    def _register_approval(self, session_id: str, pending) -> ApprovalItem:
+        value = pending.value if isinstance(pending.value, dict) else {"summary": str(pending.value)}
+        expires_at = datetime.now(UTC) + timedelta(minutes=self._settings.approval_ttl_minutes or _APPROVAL_TTL_MINUTES)
+        if self._session_repo.get_approval(pending.id) is None:
             self._session_repo.create_approval(
-                approval_id=new_approval_id,
+                approval_id=pending.id,
                 session_id=session_id,
-                tool_name=pending_approval["tool_name"],
-                tool_args=pending_approval.get("tool_args", {}),
-                summary=pending_approval["summary"],
+                tool_name=value.get("action", "approval"),
+                tool_args=value.get("details", {}),
+                summary=value.get("summary", "Approval required"),
                 expires_at=expires_at,
-                cloud_resource_type=pending_approval.get("cloud_resource_type"),
+                cloud_resource_type=value.get("cloud_resource_type"),
             )
-            approval_items.append(ApprovalItem(
-                approval_id=new_approval_id,
-                summary=pending_approval["summary"],
-                tool_name=pending_approval["tool_name"],
-                tool_args=pending_approval.get("tool_args", {}),
-                expires_at=expires_at.isoformat(),
-                cloud_resource_type=pending_approval.get("cloud_resource_type"),
-            ))
-            response_status = "approval_required"
+        row = self._session_repo.get_approval(pending.id) or {}
+        return ApprovalItem(
+            approval_id=pending.id,
+            summary=row.get("summary", value.get("summary", "")),
+            tool_name=row.get("tool_name", value.get("action", "")),
+            tool_args=row.get("tool_args", value.get("details", {})),
+            expires_at=row.get("expires_at", expires_at.isoformat()),
+            cloud_resource_type=row.get("cloud_resource_type"),
+        )
 
-        # Add any already-pending approvals
-        existing_pending = self._session_repo.list_pending_approvals(session_id)
-        for row in existing_pending:
-            if not any(a.approval_id == row["approval_id"] for a in approval_items):
-                approval_items.append(ApprovalItem(
-                    approval_id=row["approval_id"],
-                    summary=row["summary"],
-                    tool_name=row["tool_name"],
-                    tool_args=row["tool_args"],
-                    expires_at=row["expires_at"],
-                    cloud_resource_type=row.get("cloud_resource_type"),
-                ))
+    def _resolve_open_approvals(self, session_id: str, status: str) -> None:
+        for row in self._session_repo.list_pending_approvals(session_id):
+            self._session_repo.resolve_approval(row["approval_id"], status)
 
-        # Refreshed session
-        refreshed = self._session_repo.get_session(session_id) or session
-
+    def _build_response(self, session_id: str, message: str, pending) -> ChatResponse:
+        snap = self.snapshot(session_id)
+        phase = derive_phase(snap)
+        self._session_repo.update_phase(session_id, phase)
+        approvals = [self._register_approval(session_id, pending)] if pending is not None else []
+        refreshed = self._session_repo.get_session(session_id) or {}
         return ChatResponse(
             session_id=session_id,
-            message=response_message,
-            status=ChatStatus(response_status) if response_status in ChatStatus.__members__.values() else ChatStatus.ok,
-            migration_phase=MigrationPhase(new_phase) if new_phase in MigrationPhase.__members__ else MigrationPhase(phase),
+            message=message,
+            status=ChatStatus.approval_required if pending is not None else ChatStatus.ok,
+            migration_phase=phase,
             completed_phases=refreshed.get("completed_phases", []),
-            pending_approvals=approval_items,
-            suggestions=suggestions,
-            phase_data=refreshed.get("phase_data", {}),
+            pending_approvals=approvals,
+            suggestions=suggestions_for(
+                snap, [s.display_name for s in self._source_registry.list_sources()], pending is not None
+            ),
+            phase_data=public_phase_data(refreshed.get("phase_data", {})),
         )
 
     # ------------------------------------------------------------------
-    # Approval handling
+    # Credential capture
     # ------------------------------------------------------------------
 
-    def _handle_approval(
-        self,
-        session_id: str,
-        approval_id: str,
-        approve: bool,
-        session: dict,
-    ) -> ChatResponse:
-        phase = session.get("migration_phase", MigrationPhase.INIT)
+    def _capture_secrets(self, session_id: str, message: str) -> str:
+        """Pull credentials out of the message before the LLM sees it; return the safe text."""
+        snap = self.snapshot(session_id)
+        plugin = self._source_registry.get_plugin(snap.source_system or "sap_s4")
+        fields = plugin.required_cred_fields if plugin else []
+        captured = capture_credentials(message, [f.key for f in fields], {f.key for f in fields if f.secret})
+        if not captured.captured_anything:
+            return message
 
-        with log_step(logger, "handle_approval", phase=phase, session_id=session_id):
-            record = self._session_repo.get_approval(approval_id)
-            if record is None:
-                return ChatResponse(
-                    session_id=session_id,
-                    message=f"Approval ID '{approval_id}' not found or expired.",
-                    status=ChatStatus.error,
-                    migration_phase=MigrationPhase(phase),
-                )
+        notes: list[str] = []
+        if captured.azure:
+            session = self._session_repo.get_session(session_id) or {"phase_data": {}}
+            vault_config = dict(session["phase_data"].get("vault_config", {}) or {})
+            creds = dict(vault_config.get("azure_credentials", {}) or {})
+            creds.update(captured.azure)
+            vault_config["azure_credentials"] = creds
+            vault_config["azure_authenticated"] = False
+            self._session_repo.patch_phase_data(session_id, {"vault_config": vault_config})
+            notes.append("Azure credentials received: " + ", ".join(sorted(captured.azure)))
 
-            if not approve:
-                self._session_repo.resolve_approval(approval_id, "rejected")
-                logger.info(
-                    "Approval rejected: %s",
-                    record["tool_name"],
-                    extra={"phase": phase, "session_id": session_id},
-                )
-                return ChatResponse(
-                    session_id=session_id,
-                    message=f"The operation '{record['summary']}' was rejected. You can adjust the plan or try again.",
-                    status=ChatStatus.ok,
-                    migration_phase=MigrationPhase(phase),
-                    completed_phases=session.get("completed_phases", []),
-                    phase_data=session.get("phase_data", {}),
-                )
-
-            # Execute the approved operation
-            tool_name = record["tool_name"]
-            tool_args = record["tool_args"]
-            logger.info(
-                "Executing approved tool: %s",
-                tool_name,
-                extra={"phase": phase, "session_id": session_id},
-            )
-
-            result_msg = self._execute_approved_tool(tool_name, tool_args, session_id, phase)
-            self._session_repo.resolve_approval(approval_id, "approved")
-
-            # Advance phase based on approved tool
-            next_phase = self._next_phase_after_approval(tool_name, phase)
-            if next_phase:
-                self._session_repo.update_phase(session_id, next_phase)
-
-            refreshed = self._session_repo.get_session(session_id) or session
-
-            return ChatResponse(
-                session_id=session_id,
-                message=result_msg,
-                status=ChatStatus.ok,
-                migration_phase=MigrationPhase(next_phase or phase),
-                completed_phases=refreshed.get("completed_phases", []),
-                pending_approvals=[],
-                suggestions=self._suggestions_after_approval(tool_name),
-                phase_data=refreshed.get("phase_data", {}),
-            )
-
-    def _execute_approved_tool(
-        self, tool_name: str, tool_args: dict, session_id: str, phase: str
-    ) -> str:
-        """Execute an approved tool. Tries MCP first, falls back to Azure SDK."""
-        logger.info(
-            "[TOOL] Executing approved: %s",
-            tool_name,
-            extra={"phase": phase, "session_id": session_id},
-        )
-        try:
-            if tool_name == "provision_storage":
-                return self._provision_storage_real(tool_args, session_id, phase)
-            elif tool_name == "extract_metadata":
-                return self._extract_metadata_real(tool_args, session_id, phase)
-            elif tool_name == "provision_databricks":
-                return self._provision_databricks_real(tool_args, session_id, phase)
-            elif tool_name == "provision_adf":
-                return self._provision_adf_real(tool_args, session_id, phase)
+        secrets = {f"source-{k}": v for k, v in captured.source.items()}
+        if captured.databricks_pat:
+            secrets["databricks-pat"] = captured.databricks_pat
+        if secrets:
+            if snap.vault_ready:
+                stored, failed = self._store_secrets(session_id, secrets)
+                if stored:
+                    notes.append(f"stored in Key Vault {snap.vault_name}: {', '.join(stored)}")
+                if failed:
+                    notes.append(f"FAILED to store in Key Vault: {', '.join(failed)}")
             else:
-                return f"✅ Operation `{tool_name}` completed."
+                with self._pending_lock:
+                    self._pending_secrets.setdefault(session_id, {}).update(secrets)
+                notes.append(f"held until the Key Vault is created: {', '.join(secrets)}")
+
+        logger.info("Captured credentials (%s)", "; ".join(notes), extra={"phase": "-", "session_id": session_id})
+        return (
+            f"{captured.text}\n\n[System note: credential values were captured by the system and are hidden "
+            f"from you. {'; '.join(notes)}. Do not ask the user to repeat them.]"
+        )
+
+    def _store_secrets(self, session_id: str, secrets: dict[str, str]) -> tuple[list[str], list[str]]:
+        snap = self.snapshot(session_id)
+        stored: list[str] = []
+        failed: list[str] = []
+        try:
+            backend = self._build_secrets_backend(snap.cloud_provider or "azure", session_id)
         except Exception as exc:
-            logger.error(
-                "[TOOL] %s failed: %s", tool_name, exc, exc_info=True,
-                extra={"phase": phase, "session_id": session_id},
-            )
-            return f"❌ **`{tool_name}` failed:** {exc}\n\nCheck server logs for details."
+            logger.warning("Secrets backend unavailable: %s", exc, extra={"phase": "-", "session_id": session_id})
+            return stored, list(secrets)
+        for name, value in secrets.items():
+            try:
+                backend.store_secret(snap.vault_name, name, value)
+                stored.append(name)
+            except Exception as exc:
+                logger.warning("Storing secret %s failed: %s", name, exc, extra={"phase": "-", "session_id": session_id})
+                failed.append(name)
+        if stored:
+            session = self._session_repo.get_session(session_id) or {"phase_data": {}}
+            vault_config = dict(session["phase_data"].get("vault_config", {}) or {})
+            vault_config["stored_secret_names"] = sorted(set(vault_config.get("stored_secret_names", []) or []) | set(stored))
+            self._session_repo.patch_phase_data(session_id, {"vault_config": vault_config})
+        return stored, failed
+
+    def flush_pending_secrets(self, session_id: str) -> tuple[list[str], list[str]]:
+        """Store credentials captured before the vault existed. Called right after vault creation."""
+        with self._pending_lock:
+            secrets = self._pending_secrets.pop(session_id, {})
+        if not secrets:
+            return [], []
+        stored, failed = self._store_secrets(session_id, secrets)
+        if failed:
+            with self._pending_lock:
+                self._pending_secrets.setdefault(session_id, {}).update({k: secrets[k] for k in failed})
+        return stored, failed
 
     # ------------------------------------------------------------------
     # Real tool implementations (MCP primary → Azure SDK fallback)
@@ -838,7 +842,7 @@ class MigrationOrchestratorService:
         vault_name = vault_config.get("vault_name", "")
         if vault_name:
             try:
-                backend = self._build_secrets_backend(session_id)
+                backend = self._build_secrets_backend(session.get("cloud_provider") or "azure", session_id)
                 token = backend.get_secret(vault_name, "databricks-pat") or ""
             except Exception:
                 pass
@@ -962,24 +966,6 @@ class MigrationOrchestratorService:
             "(landing \u2192 bronze \u2192 silver) can be configured in ADF Studio.\n\n"
             "\U0001f389 Migration infrastructure setup is **complete!**"
         )
-
-    def _next_phase_after_approval(self, tool_name: str, current_phase: str) -> str | None:
-        mapping = {
-            "provision_storage": MigrationPhase.STORAGE_PROVISIONED,
-            "extract_metadata": MigrationPhase.METADATA_EXTRACTED,
-            "provision_databricks": MigrationPhase.DATABRICKS_PROVISIONED,
-            "provision_adf": MigrationPhase.ADF_PROVISIONED,
-        }
-        return mapping.get(tool_name)
-
-    def _suggestions_after_approval(self, tool_name: str) -> list[str]:
-        mapping = {
-            "provision_storage": ["Extract SAP metadata now", "What tables will be scanned?"],
-            "extract_metadata": ["Create Databricks workspace", "What's next?"],
-            "provision_databricks": ["Upload notebooks now"],
-            "provision_adf": ["Show migration summary"],
-        }
-        return mapping.get(tool_name, ["What's next?"])
 
     # ------------------------------------------------------------------
     # Helpers
