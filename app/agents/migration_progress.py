@@ -97,6 +97,7 @@ class MigrationSnapshot:
     cloud_provider: str | None
     cloud_region: str | None
     resource_group: str
+    resource_group_set: bool
     azure_creds_from_settings: bool
     azure_creds_collected: list[str]
     azure_authenticated: bool
@@ -184,6 +185,7 @@ def build_snapshot(
         resource_group=vault_config.get("resource_group")
         or settings.azure_resource_group
         or DEFAULT_RESOURCE_GROUP,
+        resource_group_set=bool(vault_config.get("resource_group")),
         azure_creds_from_settings=bool(
             settings.has_azure_service_principal and settings.azure_subscription_id
         ) and not azure_creds,
@@ -254,7 +256,7 @@ def next_step(s: MigrationSnapshot) -> str:
             + ". Offer the step-by-step guide if they don't have them."
         )
     if not s.vault_ready:
-        return "Confirm the resource group (default shown above), then call create_secrets_vault."
+        return "Confirm the resource group (default shown above), then either call create_secrets_vault or, if the user already has a vault, use_existing_vault."
     if s.source_creds_missing:
         return (
             f"Collect {s.source_display or 'source'} connection details. Still missing: "
@@ -297,6 +299,8 @@ def suggestions_for(s: MigrationSnapshot, source_names: list[str], approval_pend
     if s.azure_creds_missing:
         return ["I have my credentials", "Service principal guide"]
     if not s.vault_ready:
+        if s.resource_group_set:
+            return ["Create a new Key Vault", "Use an existing Key Vault"]
         return [f"Use {s.resource_group}", "Use a different resource group"]
     if s.source_creds_missing:
         return ["Which credentials do you need?"]

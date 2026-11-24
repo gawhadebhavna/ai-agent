@@ -37,6 +37,7 @@ _NEGATIVE = re.compile(
     re.IGNORECASE,
 )
 _RG_NAME = re.compile(r"^[A-Za-z0-9_\-.()]{1,90}$")
+_VAULT_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9-]{1,22}[A-Za-z0-9]$")
 
 
 def _session_id(config: RunnableConfig) -> str:
@@ -262,6 +263,76 @@ def build_migration_tools(svc: "MigrationOrchestratorService") -> list:
         return f"SUCCESS: Key Vault {vault_name} created in {snap.resource_group} ({snap.cloud_region}). URI: {vault_uri}.{extra}"
 
     @tool
+    def use_existing_vault(vault_name: str, config: RunnableConfig) -> str:
+        """Use an Azure Key Vault the user already has instead of creating a new one.
+
+        vault_name is the vault's name (e.g. 'AI-Delta') or its URI (https://<name>.vault.azure.net).
+        Verifies the vault exists and the service principal can access its secrets. No approval needed.
+        """
+        sid = _session_id(config)
+        name = vault_name.strip().rstrip("/")
+        uri_match = re.match(r"^https://([^./]+)\.vault\.azure\.net$", name, re.IGNORECASE)
+        if uri_match:
+            name = uri_match.group(1)
+        if not _VAULT_NAME.match(name) or "--" in name:
+            return "ERROR: invalid Key Vault name. Names are 3-24 letters, digits and single hyphens, starting with a letter."
+
+        snap = svc.snapshot(sid)
+        if snap.vault_ready:
+            if (snap.vault_name or "").lower() == name.lower():
+                return f"Vault {snap.vault_name} is already configured."
+            return f"ERROR: vault {snap.vault_name} is already configured for this migration; switching vaults now would orphan stored secrets."
+        if snap.cloud_provider != "azure":
+            return "ERROR: existing-vault support is Azure-only; set the cloud target to Azure first."
+        if snap.azure_creds_missing:
+            return f"ERROR: Azure credentials missing: {', '.join(snap.azure_creds_missing)}."
+
+        found_rg, found_region = None, None
+        try:
+            from azure.mgmt.keyvault import KeyVaultManagementClient
+
+            kv_client = KeyVaultManagementClient(svc._get_azure_credential(sid), svc._get_azure_subscription_id(sid))
+            match = next((v for v in kv_client.vaults.list_by_subscription() if v.name.lower() == name.lower()), None)
+            if match is not None:
+                name, found_region, found_rg = match.name, match.location, match.id.split("/")[4]
+        except Exception as exc:
+            logger.info("use_existing_vault: lookup skipped: %s", exc, extra={"phase": "-", "session_id": sid})
+
+        try:
+            backend = svc._build_secrets_backend("azure", sid)
+            secret_count = len(backend.get_secret_names(name))
+        except Exception as exc:
+            text = str(exc)
+            if any(s in text for s in ("getaddrinfo", "Failed to resolve", "Name or service not known", "NameResolution", "No such host")):
+                return f"ERROR: no Key Vault named '{name}' was found (https://{name}.vault.azure.net does not resolve). Ask the user to check the name."
+            if "Forbidden" in text or "403" in text or "does not have secrets list permission" in text:
+                return (
+                    f"ERROR: vault '{name}' exists but the service principal cannot access its secrets. Grant it "
+                    "Get/List/Set secret permissions (Access policies) or the 'Key Vault Secrets Officer' role (RBAC), then retry."
+                )
+            logger.warning("use_existing_vault failed: %s", exc, extra={"phase": "-", "session_id": sid})
+            return f"ERROR: could not access vault '{name}': {_explain_azure_error(exc)}"
+
+        patch_vault_config(sid, {
+            "vault_name": name,
+            "vault_uri": f"https://{name}.vault.azure.net/",
+            "vault_service": "Azure Key Vault",
+            "vault_existing": True,
+            "azure_authenticated": True,
+        })
+        stored, failed = svc.flush_pending_secrets(sid)
+        notes = [f"{secret_count} existing secret(s) visible"]
+        if found_rg:
+            notes.append(f"located in resource group {found_rg}, region {found_region}")
+            if found_region and snap.cloud_region and found_region.replace(" ", "").lower() != snap.cloud_region:
+                notes.append(f"note: other migration resources will still be created in {snap.cloud_region}")
+        if stored:
+            notes.append(f"stored previously provided secrets: {', '.join(stored)}")
+        if failed:
+            notes.append(f"FAILED to store: {', '.join(failed)} (the service principal may lack Set permission)")
+        return f"SUCCESS: using existing Key Vault {name} ({'; '.join(notes)})."
+
+    @tool
     def provision_storage(config: RunnableConfig) -> str:
         """Create the Azure storage account with landing, metadata, bronze and silver containers. Shows an approval card first."""
         sid = _session_id(config)
@@ -426,6 +497,7 @@ def build_migration_tools(svc: "MigrationOrchestratorService") -> list:
         set_resource_group,
         verify_azure_credentials,
         create_secrets_vault,
+        use_existing_vault,
         provision_storage,
         extract_source_metadata,
         provision_databricks,
