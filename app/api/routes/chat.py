@@ -7,7 +7,7 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.agents.migration_orchestrator import MigrationOrchestratorService
+from app.agents.migration_orchestrator import MigrationOrchestratorService, public_phase_data
 from app.dependencies import get_migration_orchestrator, get_session_repository
 from app.persistence.session_repository import SessionRepository
 from app.schemas.chat import (
@@ -32,6 +32,15 @@ def create_session(
 ) -> SessionCreateResponse:
     """Create a new migration session. Returns session_id."""
     return orchestrator.create_session()
+
+
+@router.get("/sessions")
+def list_sessions(
+    limit: int = 50,
+    session_repo: SessionRepository = Depends(get_session_repository),
+) -> dict:
+    """List recent sessions (newest first) for the session switcher."""
+    return {"sessions": session_repo.list_sessions(limit=max(1, min(limit, 200)))}
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +123,7 @@ def get_status(
         migration_phase=MigrationPhase(phase) if phase in MigrationPhase.__members__ else MigrationPhase.INIT,
         completed_phases=session.get("completed_phases", []),
         pending_approvals=pending,
-        phase_data=session.get("phase_data", {}),
+        phase_data=public_phase_data(session.get("phase_data", {})),
     )
 
 
